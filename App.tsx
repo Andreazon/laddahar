@@ -1,19 +1,18 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { GoogleGenAI } from "@google/genai";
-import { INITIAL_USERS, SETTINGS, CAR_MODELS } from './constants';
-import { User, ChargingSession } from './types';
+import { INITIAL_USERS, SETTINGS, CAR_MODELS } from './constants.ts';
+import { User, ChargingSession } from './types.ts';
+// Fix: Removed missing members from date-fns main entry point as reported by compiler
 import { 
   format, 
-  startOfMonth, 
   endOfMonth, 
   eachDayOfInterval, 
   addMonths, 
-  subMonths,
-  isToday,
-  parseISO
+  isToday
 } from 'date-fns';
-import { sv } from 'date-fns/locale';
+// Fix: Import sv locale from its specific path to avoid exported member error in some environments
+import { sv } from 'date-fns/locale/sv';
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -73,6 +72,11 @@ const App: React.FC = () => {
   const monthEnd = endOfMonth(currentDate);
   const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
 
+  // Helper replacement for missing startOfMonth from date-fns
+  function startOfMonth(date: Date): Date {
+    return new Date(date.getFullYear(), date.getMonth(), 1);
+  }
+
   const toggleSession = (date: Date) => {
     if (!activeUserId) return;
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -86,7 +90,8 @@ const App: React.FC = () => {
   const userSessionsThisMonth = useMemo(() => {
     if (!activeUserId) return [];
     return sessions.filter(s => {
-      const sessionDate = parseISO(s.date);
+      // Fix: Replacement for missing parseISO from date-fns, using native Date constructor
+      const sessionDate = new Date(s.date);
       return s.userId === activeUserId && sessionDate >= monthStart && sessionDate <= monthEnd;
     });
   }, [sessions, activeUserId, monthStart, monthEnd]);
@@ -102,18 +107,20 @@ const App: React.FC = () => {
     
     setIsGeneratingImage(true);
     try {
-      // Use the specified Gemini model for image generation
+      // Initialize Gemini AI client for image generation
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const prompt = `A stylish, high-quality professional 3D animated avatar face of a person named ${formData.name}. Friendly expression, simple clean studio background, Pixar style. Highly detailed.`;
       
+      // Fix: Follow @google/genai guidelines for generateContent parameters (contents should be an object, not an array of objects)
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
-        contents: [{ parts: [{ text: prompt }] }],
+        contents: { parts: [{ text: prompt }] },
         config: { imageConfig: { aspectRatio: "1:1" } }
       });
 
       if (response.candidates && response.candidates[0].content.parts) {
         for (const part of response.candidates[0].content.parts) {
+          // Iterate through parts to find the image data
           if (part.inlineData) {
             const base64Data = part.inlineData.data;
             setFormData(prev => ({ ...prev, avatarUrl: `data:image/png;base64,${base64Data}` }));
@@ -129,7 +136,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Fix: Added missing deleteUser function to handle profile deletion
   const deleteUser = (userId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (window.confirm('Är du säker på att du vill ta bort den här profilen? All historik för användaren försvinner.')) {
@@ -238,7 +244,7 @@ const App: React.FC = () => {
         {/* User Modal */}
         {userModal.show && (
           <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-md flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-[3rem] p-10 max-md w-full shadow-2xl relative animate-in zoom-in duration-200">
+            <div className="bg-white rounded-[3rem] p-10 max-w-md w-full shadow-2xl relative animate-in zoom-in duration-200">
               <button onClick={() => setUserModal({show: false, mode: 'add'})} className="absolute top-8 right-8 text-slate-300 hover:text-slate-900"><X size={24} /></button>
               <h2 className="text-3xl font-black mb-8 text-slate-900">{userModal.mode === 'add' ? 'Ny profil' : 'Redigera profil'}</h2>
               
@@ -342,7 +348,10 @@ const App: React.FC = () => {
   }
 
   const activeUserSafe = users.find(u => u.id === activeUserId);
-  if (!activeUserSafe) return null;
+  if (!activeUserSafe) {
+    setActiveUserId(null); // Återställ om användaren inte hittas
+    return null;
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 md:p-10">
@@ -371,7 +380,8 @@ const App: React.FC = () => {
                   {format(currentDate, 'MMMM yyyy', { locale: sv })}
                 </h2>
                 <div className="flex items-center gap-3 print:hidden">
-                  <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-3 bg-white border border-slate-200 rounded-2xl hover:text-emerald-500 transition-all shadow-sm"><ChevronLeft size={24} /></button>
+                  {/* Fix: Using addMonths with negative value as a substitute for subMonths which was reported as missing */}
+                  <button onClick={() => setCurrentDate(addMonths(currentDate, -1))} className="p-3 bg-white border border-slate-200 rounded-2xl hover:text-emerald-500 transition-all shadow-sm"><ChevronLeft size={24} /></button>
                   <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-3 bg-white border border-slate-200 rounded-2xl hover:text-emerald-500 transition-all shadow-sm"><ChevronRight size={24} /></button>
                 </div>
               </div>
