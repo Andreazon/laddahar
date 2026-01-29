@@ -103,9 +103,9 @@ const App: React.FC = () => {
     
     setIsGeneratingImage(true);
     try {
-      // Fix: Use new GoogleGenAI instance for each API call to ensure latest key
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A joyful, fashionable 3D Pixar-style avatar of a person named ${formData.name}. Bright radiant smile, trendy high-end clothing, warm cinematic studio lighting, vibrant colorful background (soft pinks/emeralds), extremely detailed face and stylish hair. High fashion aesthetic.`;
+      // Prompten har nu ändrats för att specifikt fokusera på manliga avatarer (män)
+      const prompt = `A joyful, fashionable 3D Pixar-style avatar of a man named ${formData.name}. Masculine features, bright radiant smile, trendy high-end men's fashion clothing, warm cinematic studio lighting, vibrant colorful background (soft blues/emeralds), extremely detailed face and stylish male haircut. High fashion aesthetic.`;
       
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
@@ -132,7 +132,7 @@ const App: React.FC = () => {
 
   const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
-    // Using Lorelei style from DiceBear - more fashionable and happy
+    // Lorelei style med seed för manlig framtoning om möjligt, annars fallback
     return `https://api.dicebear.com/7.x/lorelei/svg?seed=${user.name}&radius=50&backgroundColor=b6e3f4,c0aede,d1d4f9&mood=happy`;
   };
 
@@ -277,7 +277,7 @@ const App: React.FC = () => {
                     <Sparkles size={24} />
                   </button>
                 </div>
-                <p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.25em] mt-8 text-center">Få en personlig AI-avatar <br/><span className="text-emerald-500">fashion-style</span></p>
+                <p className="text-[11px] text-slate-400 font-black uppercase tracking-[0.25em] mt-8 text-center">Få en personlig manlig AI-avatar <br/><span className="text-emerald-500">fashion-style</span></p>
               </div>
 
               <form onSubmit={handleUserSubmit} className="space-y-6">
@@ -327,7 +327,7 @@ const App: React.FC = () => {
 
         {showSettings && (
           <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-md flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-[3rem] p-12 max-w-sm w-full shadow-2xl relative">
+            <div className="bg-white rounded-[3rem] p-12 max-sm w-full shadow-2xl relative">
               <button onClick={() => setShowSettings(false)} className="absolute top-10 right-10 text-slate-300 hover:text-slate-900"><X size={24} /></button>
               <h2 className="text-2xl font-black mb-8 tracking-tighter text-slate-800">Prisinställningar</h2>
               <div className="space-y-6">
