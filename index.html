@@ -14,6 +14,8 @@
         @media print {
             .print\:hidden { display: none !important; }
         }
+        /* Säkerställ att root syns */
+        #root { min-height: 100vh; }
     </style>
 <script type="importmap">
 {
@@ -31,5 +33,7 @@
 </head>
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
+    <!-- Denna rad är kritisk för att starta appen -->
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
