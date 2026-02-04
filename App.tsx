@@ -154,20 +154,31 @@ const App: React.FC = () => {
         body: JSON.stringify({ users, sessions, settings: appSettings })
       });
       
-      // JSONBlob returnerar ID:t i Location-headern. Om webbläsaren blockerar den, 
-      // kan vi ibland hitta ID:t genom att titta på den faktiska URL:en om fetch följde redirecten.
-      const location = response.headers.get('Location') || response.url;
-      const id = location.split('/').pop();
+      // JSONBlob returnerar ID i "Location" headern. 
+      // Vissa webbläsare döljer denna header pga säkerhet (CORS).
+      // Vi försöker extrahera ID:t på två sätt.
+      const locationHeader = response.headers.get('Location');
+      let id = '';
       
-      if (id && id !== 'jsonBlob') {
+      if (locationHeader) {
+        id = locationHeader.split('/').pop() || '';
+      } else {
+        // Om headern saknas kan vi prova att titta på response.url om den ändrats
+        const urlParts = response.url.split('/');
+        const lastPart = urlParts[urlParts.length - 1];
+        if (lastPart !== 'jsonBlob') id = lastPart;
+      }
+      
+      if (id && id.length > 5) {
         setAppSettings(prev => ({ ...prev, cloudId: id }));
         setTempCloudId(id);
-        alert(`Succé! Hub skapad. ID: ${id}`);
+        alert(`Klart! Din gemensamma hub är skapad.\nID: ${id}\n\nDela detta ID med dina kollegor.`);
       } else {
-        throw new Error("Could not extract ID");
+        throw new Error("Kunde inte läsa ut ID från servern.");
       }
     } catch (e) {
-      alert("Kunde inte skapa molnhub. Testa att uppdatera sidan eller försök igen senare.");
+      console.error(e);
+      alert("Något gick fel vid skapandet. Detta kan bero på din webbläsares säkerhetsinställningar. Försök igen eller be en kollega prova!");
     } finally {
       setIsSyncing(false);
     }
@@ -227,7 +238,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A high-quality 3D portrait of a man named ${formData.name}, Pixar style, joyful expression, business casual attire, studio lighting, simple clean background.`;
+      const prompt = `A professional 3D animated portrait of ${formData.name}, friendly face, bright studio lighting, minimalist style, centered, high quality.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -246,8 +257,8 @@ const App: React.FC = () => {
 
   const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
-    // DiceBear v9 - Mer robust och stabil URL
-    return `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&radius=50&backgroundColor=b6e3f4,c0aede,d1d4f9&clothingColor=262e3d&mouth=smile`;
+    // DiceBear v7 - Mycket stabilare för standard-avatarer
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
   };
 
   const activeUser = users.find(u => u.id === activeUserId);
@@ -292,8 +303,15 @@ const App: React.FC = () => {
               {users.map(u => (
                 <div key={u.id} className="group relative">
                   <button onClick={() => setActiveUserId(u.id)} className="w-full bg-white p-10 rounded-[4rem] border border-slate-100 hover:shadow-2xl hover:shadow-emerald-100 transition-all flex flex-col items-center gap-6 group shadow-sm hover:-translate-y-3 duration-300">
-                    <div className="w-32 h-32 bg-slate-50 rounded-full overflow-hidden border-4 border-white shadow-lg relative z-10 transition-transform group-hover:scale-105">
-                      <img src={getAvatarUrl(u)} className="w-full h-full object-cover" alt={u.name} />
+                    <div className="w-32 h-32 bg-slate-50 rounded-full overflow-hidden border-4 border-white shadow-lg relative z-10 transition-transform group-hover:scale-105 flex items-center justify-center">
+                      <img 
+                        src={getAvatarUrl(u)} 
+                        className="w-full h-full object-cover" 
+                        alt={u.name} 
+                        onError={(e) => {
+                          e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=random&size=200&bold=true`;
+                        }}
+                      />
                     </div>
                     <div className="space-y-2 text-center">
                       <div className="font-black text-slate-800 text-2xl leading-tight">{u.name}</div>
@@ -319,8 +337,15 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between print:hidden">
               <button onClick={() => setActiveUserId(null)} className="flex items-center gap-3 px-10 py-5 bg-white border border-slate-100 rounded-3xl text-slate-600 hover:text-emerald-500 font-black text-xs uppercase tracking-[0.2em] shadow-sm hover:shadow-md transition-all active:scale-95"><ArrowLeft size={16} /> Tillbaka</button>
               <div className="flex items-center gap-5 bg-white px-8 py-4 rounded-[2rem] border border-slate-100 shadow-sm">
-                <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-emerald-100 shadow-inner">
-                  <img src={getAvatarUrl(activeUser!)} alt="user" className="w-full h-full object-cover" />
+                <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-emerald-100 shadow-inner flex items-center justify-center">
+                  <img 
+                    src={getAvatarUrl(activeUser!)} 
+                    alt="user" 
+                    className="w-full h-full object-cover" 
+                    onError={(e) => {
+                      e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(activeUser?.name || 'User')}&background=random&size=200&bold=true`;
+                    }}
+                  />
                 </div>
                 <div className="flex flex-col">
                   <span className="text-base font-black text-slate-800">{activeUser?.name}</span>
@@ -391,7 +416,7 @@ const App: React.FC = () => {
       {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50 overflow-y-auto">
-          <div className="bg-white rounded-[4.5rem] p-14 max-xl w-full shadow-2xl relative my-8 animate-in slide-in-from-bottom duration-400">
+          <div className="bg-white rounded-[4.5rem] p-14 max-w-xl w-full shadow-2xl relative my-8 animate-in slide-in-from-bottom duration-400">
             <button onClick={() => setShowSettings(false)} className="absolute top-12 right-12 text-slate-300 hover:text-slate-900 transition-colors"><X size={32} /></button>
             <div className="space-y-14">
               <section>
@@ -441,7 +466,16 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center mb-12">
               <div className="relative group">
                 <div className="w-44 h-44 bg-slate-50 rounded-full overflow-hidden border-4 border-slate-50 shadow-inner flex items-center justify-center relative">
-                  {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : <img src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} className="w-full h-full object-cover" alt="Preview" />}
+                  {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : (
+                    <img 
+                      src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} 
+                      className="w-full h-full object-cover" 
+                      alt="Preview" 
+                      onError={(e) => {
+                        e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(formData.name || 'User')}&background=random&size=200&bold=true`;
+                      }}
+                    />
+                  )}
                 </div>
                 <button type="button" onClick={generateAIAvatar} disabled={isGeneratingImage || !formData.name} className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"><Sparkles size={32} /></button>
               </div>
