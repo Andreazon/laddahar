@@ -76,6 +76,12 @@ const App: React.FC = () => {
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
 
+  // Uppdatera temp-värden när settings ändras externt (t.ex. vid synk)
+  useEffect(() => {
+    setTempKwhPrice(appSettings.kwhPrice.toString());
+    setTempCloudId(appSettings.cloudId || '');
+  }, [appSettings.cloudId, appSettings.kwhPrice]);
+
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
@@ -83,7 +89,6 @@ const App: React.FC = () => {
   }, [users, sessions, appSettings]);
 
   // --- Cloud Logic (KVDB implementation) ---
-  // Vi använder en unik prefix för att inte krocka med andra appar
   const getCloudUrl = (id: string) => `https://kvdb.io/75YvWv6Q9Z1Q4Z8Q1Q4Z8Q/laddahar_v2_${id.toLowerCase().trim()}`;
 
   const fetchFromCloud = useCallback(async (manualId?: string) => {
@@ -103,16 +108,15 @@ const App: React.FC = () => {
         if (data && typeof data === 'object') {
           if (data.users) setUsers(data.users);
           if (data.sessions) setSessions(data.sessions);
-          if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice }));
+          if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice, cloudId: id }));
           setCloudStatus('success');
-          if (manualId) setAppSettings(prev => ({ ...prev, cloudId: manualId }));
         }
       } else if (response.status === 404) {
-        // Hinken finns inte ännu
+        // Om manualId skickades med betyder det att användaren försöker koppla till nåt som inte finns
         if (manualId) {
-          alert("Hittade ingen data med det ID:t. Om du vill skapa en ny hink med detta namn, klicka på 'Initialisera'.");
+          alert("Hittade ingen data på molnet med detta ID. Klicka på 'Initialisera' om du vill skapa en ny hubb med detta namn.");
         }
-        setCloudStatus('error');
+        setCloudStatus('idle');
       } else {
         setCloudStatus('error');
       }
@@ -163,27 +167,38 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud();
-    const timer = setInterval(() => fetchFromCloud(), 30000); // Kolla var 30:e sekund
+    const timer = setInterval(() => fetchFromCloud(), 30000);
     return () => clearInterval(timer);
   }, [appSettings.cloudId, fetchFromCloud]);
 
-  const createCloudHub = async () => {
-    const randomId = Math.random().toString(36).substring(2, 10).toUpperCase();
-    setTempCloudId(randomId);
-    if (window.confirm(`Vill du skapa en ny hub med slumpmässigt ID: "${randomId}"?`)) {
-      await pushToCloud(sessions, users, randomId);
-      alert(`Hub skapad! ID: ${randomId}`);
-    }
-  };
-
   const handleManualInitialize = async () => {
-    if (!tempCloudId || tempCloudId.length < 3) {
+    const cleanId = tempCloudId.trim();
+    if (!cleanId || cleanId.length < 3) {
       alert("Ange ett ID på minst 3 tecken.");
       return;
     }
-    if (window.confirm(`Vill du skapa en ny gemensam hub med namnet "${tempCloudId}"?\n\nDetta kommer ladda upp din nuvarande data som startpunkt.`)) {
-      await pushToCloud(sessions, users, tempCloudId);
-      alert(`Klart! "${tempCloudId}" är nu redo att användas av alla.`);
+    if (window.confirm(`Vill du skapa en ny gemensam hub med namnet "${cleanId}"?\n\nDin nuvarande lokala data kommer att laddas upp.`)) {
+      await pushToCloud(sessions, users, cleanId);
+      // Vi tvingar en uppdatering av appSettings här
+      setAppSettings(prev => ({ ...prev, cloudId: cleanId }));
+      alert(`Hubben "${cleanId}" är nu skapad och synkad!`);
+    }
+  };
+
+  const handleSaveSettings = () => {
+    const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
+    const newId = tempCloudId.trim();
+    
+    setAppSettings({
+      kwhPrice: newPrice,
+      cloudId: newId
+    });
+    
+    setShowSettings(false);
+    
+    // Om vi har ett ID, tryck upp ändringarna direkt
+    if (newId) {
+      pushToCloud(sessions, users, newId);
     }
   };
 
@@ -241,7 +256,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A clean 3D character avatar of ${formData.name}, friendly and professional, Pixar style, high quality.`;
+      const prompt = `A professional 3D animated character portrait of ${formData.name}, friendly face, bright studio lighting, minimalist style, 8k.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -427,8 +442,11 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <button onClick={createCloudHub} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
-                      {isSyncing ? <Loader2 className="animate-spin" size={18} /> : <Database size={18} />} Slumpa ID
+                    <button onClick={() => {
+                      const randomId = Math.random().toString(36).substring(2, 10).toUpperCase();
+                      setTempCloudId(randomId);
+                    }} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
+                      <Database size={18} /> Slumpa ID
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
                       <UploadCloud size={18} /> Initialisera
@@ -437,7 +455,7 @@ const App: React.FC = () => {
                 </div>
               </section>
 
-              <button onClick={() => { setAppSettings(prev => ({ ...prev, kwhPrice: parseFloat(tempKwhPrice) })); setShowSettings(false); if(appSettings.cloudId) pushToCloud(); }} className="w-full py-8 bg-slate-900 text-white font-black rounded-[3rem] uppercase tracking-widest text-sm shadow-2xl active:scale-95 transition-all hover:bg-slate-800">Spara & Stäng</button>
+              <button onClick={handleSaveSettings} className="w-full py-8 bg-slate-900 text-white font-black rounded-[3rem] uppercase tracking-widest text-sm shadow-2xl active:scale-95 transition-all hover:bg-slate-800">Spara & Stäng</button>
             </div>
           </div>
         </div>
