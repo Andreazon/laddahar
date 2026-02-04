@@ -30,9 +30,7 @@ import {
   RefreshCw,
   Copy,
   Check,
-  AlertCircle,
-  Database,
-  UploadCloud
+  AlertCircle
 } from 'lucide-react';
 
 function getStartOfMonth(date: Date): Date {
@@ -40,6 +38,7 @@ function getStartOfMonth(date: Date): Date {
 }
 
 const App: React.FC = () => {
+  // State initialization
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('laddahar_users');
     return saved ? JSON.parse(saved) : INITIAL_USERS;
@@ -56,6 +55,7 @@ const App: React.FC = () => {
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
+  // UI state
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [userModal, setUserModal] = useState<{show: boolean, mode: 'add' | 'edit', userId?: string}>({show: false, mode: 'add'});
@@ -65,63 +65,45 @@ const App: React.FC = () => {
   const [cloudStatus, setCloudStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
   const [copiedId, setCopiedId] = useState(false);
   
+  // Refs for stable background sync without dependency loop
   const syncRef = useRef({ users, sessions, appSettings });
   useEffect(() => {
     syncRef.current = { users, sessions, appSettings };
   }, [users, sessions, appSettings]);
 
+  // Form state
   const [formData, setFormData] = useState({ 
     name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: ''
   });
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
 
-  // Uppdatera temp-värden när settings ändras externt (t.ex. vid synk)
-  useEffect(() => {
-    setTempKwhPrice(appSettings.kwhPrice.toString());
-    setTempCloudId(appSettings.cloudId || '');
-  }, [appSettings.cloudId, appSettings.kwhPrice]);
-
+  // Persistent local storage
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
     localStorage.setItem('laddahar_settings', JSON.stringify(appSettings));
   }, [users, sessions, appSettings]);
 
-  // --- Cloud Logic (KVDB implementation) ---
-  const getCloudUrl = (id: string) => `https://kvdb.io/75YvWv6Q9Z1Q4Z8Q1Q4Z8Q/laddahar_v2_${id.toLowerCase().trim()}`;
-
-  const fetchFromCloud = useCallback(async (manualId?: string) => {
-    const id = manualId || appSettings.cloudId;
-    if (!id) return;
-    
+  // --- Cloud Sync Core ---
+  const fetchFromCloud = useCallback(async () => {
+    if (!appSettings.cloudId) return;
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const response = await fetch(getCloudUrl(id), { 
-        headers: { 'Accept': 'application/json' },
-        cache: 'no-store'
-      });
-      
+      const response = await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`);
       if (response.ok) {
         const data = await response.json();
-        if (data && typeof data === 'object') {
-          if (data.users) setUsers(data.users);
-          if (data.sessions) setSessions(data.sessions);
-          if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice, cloudId: id }));
-          setCloudStatus('success');
-        }
-      } else if (response.status === 404) {
-        // Om manualId skickades med betyder det att användaren försöker koppla till nåt som inte finns
-        if (manualId) {
-          alert("Hittade ingen data på molnet med detta ID. Klicka på 'Initialisera' om du vill skapa en ny hubb med detta namn.");
-        }
-        setCloudStatus('idle');
+        if (data.users) setUsers(data.users);
+        if (data.sessions) setSessions(data.sessions);
+        if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice }));
+        setCloudStatus('success');
       } else {
+        console.error('Fetch failed:', response.status);
         setCloudStatus('error');
       }
     } catch (e) {
-      console.error("Fetch error:", e);
+      console.error('Fetch error:', e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -129,34 +111,29 @@ const App: React.FC = () => {
     }
   }, [appSettings.cloudId]);
 
-  const pushToCloud = async (overrideSessions?: ChargingSession[], overrideUsers?: User[], manualId?: string) => {
-    const id = manualId || appSettings.cloudId;
-    if (!id) return;
-
+  const pushToCloud = async (overrideSessions?: ChargingSession[], overrideUsers?: User[]) => {
+    if (!appSettings.cloudId) return;
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const payload = { 
-        users: overrideUsers || syncRef.current.users, 
-        sessions: overrideSessions || syncRef.current.sessions, 
-        settings: { kwhPrice: appSettings.kwhPrice },
-        lastUpdated: new Date().toISOString()
-      };
-
-      const response = await fetch(getCloudUrl(id), {
-        method: 'POST',
+      const response = await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ 
+          users: overrideUsers || syncRef.current.users, 
+          sessions: overrideSessions || syncRef.current.sessions, 
+          settings: { kwhPrice: syncRef.current.appSettings.kwhPrice } 
+        })
       });
       
       if (response.ok) {
         setCloudStatus('success');
-        if (manualId) setAppSettings(prev => ({ ...prev, cloudId: manualId }));
       } else {
+        console.error('Push failed:', response.status);
         setCloudStatus('error');
       }
     } catch (e) {
-      console.error("Push error:", e);
+      console.error('Push error:', e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -164,45 +141,39 @@ const App: React.FC = () => {
     }
   };
 
+  // Background fetch every 30s
   useEffect(() => {
     if (!appSettings.cloudId) return;
-    fetchFromCloud();
-    const timer = setInterval(() => fetchFromCloud(), 30000);
+    fetchFromCloud(); // Initial fetch
+    const timer = setInterval(fetchFromCloud, 30000);
     return () => clearInterval(timer);
   }, [appSettings.cloudId, fetchFromCloud]);
 
-  const handleManualInitialize = async () => {
-    const cleanId = tempCloudId.trim();
-    if (!cleanId || cleanId.length < 3) {
-      alert("Ange ett ID på minst 3 tecken.");
-      return;
-    }
-    if (window.confirm(`Vill du skapa en ny gemensam hub med namnet "${cleanId}"?\n\nDin nuvarande lokala data kommer att laddas upp.`)) {
-      await pushToCloud(sessions, users, cleanId);
-      // Vi tvingar en uppdatering av appSettings här
-      setAppSettings(prev => ({ ...prev, cloudId: cleanId }));
-      alert(`Hubben "${cleanId}" är nu skapad och synkad!`);
-    }
-  };
-
-  const handleSaveSettings = () => {
-    const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
-    const newId = tempCloudId.trim();
-    
-    setAppSettings({
-      kwhPrice: newPrice,
-      cloudId: newId
-    });
-    
-    setShowSettings(false);
-    
-    // Om vi har ett ID, tryck upp ändringarna direkt
-    if (newId) {
-      pushToCloud(sessions, users, newId);
+  const createCloudHub = async () => {
+    setIsSyncing(true);
+    try {
+      const response = await fetch('https://jsonblob.com/api/jsonBlob', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ users, sessions, settings: appSettings })
+      });
+      const location = response.headers.get('Location');
+      if (location) {
+        const id = location.split('/').pop();
+        if (id) {
+          setAppSettings(prev => ({ ...prev, cloudId: id }));
+          setTempCloudId(id);
+          alert(`Molnhub skapad! ID: ${id}`);
+        }
+      }
+    } catch (e) {
+      alert("Fel vid skapande av molnhub.");
+    } finally {
+      setIsSyncing(false);
     }
   };
 
-  // --- UI Handlers ---
+  // --- Handlers ---
   const toggleSession = (date: Date) => {
     if (!activeUserId) return;
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -211,7 +182,7 @@ const App: React.FC = () => {
       : [...sessions, { userId: activeUserId, date: dateStr }];
     
     setSessions(newSessions);
-    if (appSettings.cloudId) pushToCloud(newSessions);
+    if (appSettings.cloudId) pushToCloud(newSessions, users);
   };
 
   const handleUserSubmit = (e: React.FormEvent) => {
@@ -256,7 +227,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A professional 3D animated character portrait of ${formData.name}, friendly face, bright studio lighting, minimalist style, 8k.`;
+      const prompt = `A professional, joyful, 3D Pixar-style portrait of a GROWN MAN named ${formData.name}. Masculine features, short stylish hair, bright smile, trendy business casual clothing, studio lighting.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -275,7 +246,7 @@ const App: React.FC = () => {
 
   const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
-    return `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.name}&radius=50&backgroundColor=b6e3f4,c0aede,d1d4f9&top[]=shortHair&top[]=frizzle&top[]=shaggy&top[]=shaggyMullet&facialHair[]=beardLight&facialHairProbability=50`;
   };
 
   const activeUser = users.find(u => u.id === activeUserId);
@@ -286,6 +257,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans selection:bg-emerald-100">
+      {/* Cloud Status Overlay */}
       <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-slate-100 overflow-hidden">
         {isSyncing && <div className="h-full bg-emerald-500 animate-[progress_2s_infinite] w-1/3"></div>}
       </div>
@@ -295,7 +267,7 @@ const App: React.FC = () => {
           <div className="absolute top-6 right-6 flex items-center gap-3">
             {appSettings.cloudId && (
               <button 
-                onClick={() => fetchFromCloud()}
+                onClick={fetchFromCloud}
                 disabled={isSyncing}
                 className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all active:scale-95 shadow-sm
                   ${cloudStatus === 'error' ? 'bg-red-50 text-red-500 border-red-100' : 'bg-white text-emerald-600 border-slate-100 hover:border-emerald-200'}`}
@@ -320,7 +292,7 @@ const App: React.FC = () => {
               {users.map(u => (
                 <div key={u.id} className="group relative">
                   <button onClick={() => setActiveUserId(u.id)} className="w-full bg-white p-10 rounded-[4rem] border border-slate-100 hover:shadow-2xl hover:shadow-emerald-100 transition-all flex flex-col items-center gap-6 group shadow-sm hover:-translate-y-3 duration-300">
-                    <div className="w-32 h-32 bg-slate-50 rounded-full overflow-hidden border-4 border-white shadow-lg relative z-10 transition-transform group-hover:scale-105 flex items-center justify-center">
+                    <div className="w-32 h-32 bg-slate-50 rounded-full overflow-hidden border-4 border-white shadow-lg relative z-10 transition-transform group-hover:scale-105">
                       <img src={getAvatarUrl(u)} className="w-full h-full object-cover" alt={u.name} />
                     </div>
                     <div className="space-y-2 text-center">
@@ -347,7 +319,7 @@ const App: React.FC = () => {
             <div className="flex items-center justify-between print:hidden">
               <button onClick={() => setActiveUserId(null)} className="flex items-center gap-3 px-10 py-5 bg-white border border-slate-100 rounded-3xl text-slate-600 hover:text-emerald-500 font-black text-xs uppercase tracking-[0.2em] shadow-sm hover:shadow-md transition-all active:scale-95"><ArrowLeft size={16} /> Tillbaka</button>
               <div className="flex items-center gap-5 bg-white px-8 py-4 rounded-[2rem] border border-slate-100 shadow-sm">
-                <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-emerald-100 shadow-inner flex items-center justify-center">
+                <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-emerald-100 shadow-inner">
                   <img src={getAvatarUrl(activeUser!)} alt="user" className="w-full h-full object-cover" />
                 </div>
                 <div className="flex flex-col">
@@ -403,12 +375,20 @@ const App: React.FC = () => {
                   </div>
                   <button onClick={() => window.print()} className="w-full mt-12 py-7 bg-white text-slate-900 font-black rounded-[2rem] flex items-center justify-center gap-4 uppercase tracking-[0.2em] text-xs print:hidden active:scale-95 transition-all shadow-2xl hover:bg-slate-50"><Printer size={24} /> Skapa Rapport</button>
                 </div>
+                <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-sm flex gap-8 items-center group">
+                  <div className="p-5 bg-emerald-50 rounded-[1.5rem] text-emerald-600 group-hover:bg-emerald-100 transition-colors"><Cloud size={32} /></div>
+                  <div className="space-y-2">
+                    <h4 className="font-black text-slate-800 text-xs uppercase tracking-widest">Live Synk</h4>
+                    <p className="text-xs text-slate-400 leading-relaxed font-medium">Allt sparas i företagets gemensamma hub. Dina ändringar syns direkt hos kollegorna.</p>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
       )}
 
+      {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-xl w-full shadow-2xl relative my-8 animate-in slide-in-from-bottom duration-400">
@@ -424,43 +404,35 @@ const App: React.FC = () => {
 
               <section className="pt-14 border-t border-slate-100">
                 <h2 className="text-4xl font-black mb-10 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
-                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Ange ett namn för din Hub (t.ex. "ForetagetLaddar") och klicka på Initialisera.</p>
-                <div className="space-y-6">
-                  <div className="space-y-3">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID (Valfritt namn)</label>
-                    <div className="flex gap-4">
-                      <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ForetagetLaddar" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
-                        {appSettings.cloudId && (
-                          <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
-                            {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
-                          </button>
-                        )}
-                      </div>
-                      <button onClick={() => fetchFromCloud(tempCloudId)} className="px-10 bg-blue-500 text-white font-black rounded-[2rem] text-[11px] uppercase tracking-widest hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-100 flex items-center gap-2"><RefreshCw size={14} /> Koppla</button>
+                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Koppla ihop med kollegornas grid. Skapa en ny hub eller ange ID från en befintlig.</p>
+                <div className="space-y-5">
+                  <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID</label>
+                  <div className="flex gap-4">
+                    <div className="relative flex-1">
+                      <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="Klistra in ID..." className="w-full px-10 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                      {appSettings.cloudId && (
+                        <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
+                          {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
+                        </button>
+                      )}
                     </div>
+                    <button onClick={() => { setAppSettings(p => ({ ...p, cloudId: tempCloudId })); setShowSettings(false); }} className="px-10 bg-blue-500 text-white font-black rounded-[2rem] text-[11px] uppercase tracking-widest hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-100">Koppla</button>
                   </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <button onClick={() => {
-                      const randomId = Math.random().toString(36).substring(2, 10).toUpperCase();
-                      setTempCloudId(randomId);
-                    }} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
-                      <Database size={18} /> Slumpa ID
+                  {!appSettings.cloudId && (
+                    <button onClick={createCloudHub} className="w-full py-8 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-xs uppercase tracking-widest flex items-center justify-center gap-4">
+                      {isSyncing ? <Loader2 className="animate-spin" size={24} /> : <Plus size={24} />} Skapa Ny Gemensam Hub
                     </button>
-                    <button onClick={handleManualInitialize} disabled={!tempCloudId} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
-                      <UploadCloud size={18} /> Initialisera
-                    </button>
-                  </div>
+                  )}
                 </div>
               </section>
 
-              <button onClick={handleSaveSettings} className="w-full py-8 bg-slate-900 text-white font-black rounded-[3rem] uppercase tracking-widest text-sm shadow-2xl active:scale-95 transition-all hover:bg-slate-800">Spara & Stäng</button>
+              <button onClick={() => { setAppSettings(prev => ({ ...prev, kwhPrice: parseFloat(tempKwhPrice) })); setShowSettings(false); if(appSettings.cloudId) pushToCloud(); }} className="w-full py-8 bg-slate-900 text-white font-black rounded-[3rem] uppercase tracking-widest text-sm shadow-2xl active:scale-95 transition-all hover:bg-slate-800">Spara & Stäng</button>
             </div>
           </div>
         </div>
       )}
 
+      {/* User Creation Modal */}
       {userModal.show && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-md w-full shadow-2xl relative animate-in zoom-in duration-300">
@@ -469,14 +441,7 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center mb-12">
               <div className="relative group">
                 <div className="w-44 h-44 bg-slate-50 rounded-full overflow-hidden border-4 border-slate-50 shadow-inner flex items-center justify-center relative">
-                  {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : (
-                    <img 
-                      src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} 
-                      className="w-full h-full object-cover" 
-                      alt="Preview" 
-                      key={`${formData.name}-${formData.avatarUrl}`}
-                    />
-                  )}
+                  {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : <img src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} className="w-full h-full object-cover" alt="Preview" />}
                 </div>
                 <button type="button" onClick={generateAIAvatar} disabled={isGeneratingImage || !formData.name} className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"><Sparkles size={32} /></button>
               </div>
