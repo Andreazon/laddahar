@@ -163,10 +163,11 @@ const App: React.FC = () => {
         if (id) {
           setAppSettings(prev => ({ ...prev, cloudId: id }));
           setTempCloudId(id);
-          alert(`Molnhub skapad! ID: ${id}`);
+          alert(`Molnhub skapad! ID: ${id}\n\nHubben är nu aktiv och synkar automatiskt.`);
         }
       }
     } catch (e) {
+      console.error('Create hub error:', e);
       alert("Fel vid skapande av molnhub.");
     } finally {
       setIsSyncing(false);
@@ -416,7 +417,10 @@ const App: React.FC = () => {
                         </button>
                       )}
                     </div>
-                    <button onClick={() => { setAppSettings(p => ({ ...p, cloudId: tempCloudId })); setShowSettings(false); }} className="px-10 bg-blue-500 text-white font-black rounded-[2rem] text-[11px] uppercase tracking-widest hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-100">Koppla</button>
+                    <button onClick={() => { 
+                      setAppSettings(p => ({ ...p, cloudId: tempCloudId })); 
+                      setShowSettings(false);
+                    }} className="px-10 bg-blue-500 text-white font-black rounded-[2rem] text-[11px] uppercase tracking-widest hover:bg-blue-600 transition-all active:scale-95 shadow-lg shadow-blue-100">Koppla</button>
                   </div>
                   {!appSettings.cloudId && (
                     <button onClick={createCloudHub} className="w-full py-8 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-xs uppercase tracking-widest flex items-center justify-center gap-4">
