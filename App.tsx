@@ -38,7 +38,6 @@ function getStartOfMonth(date: Date): Date {
 }
 
 const App: React.FC = () => {
-  // State initialization
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('laddahar_users');
     return saved ? JSON.parse(saved) : INITIAL_USERS;
@@ -55,7 +54,6 @@ const App: React.FC = () => {
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
-  // UI state
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [userModal, setUserModal] = useState<{show: boolean, mode: 'add' | 'edit', userId?: string}>({show: false, mode: 'add'});
@@ -76,27 +74,29 @@ const App: React.FC = () => {
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
 
-  // Persistent local storage
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
     localStorage.setItem('laddahar_settings', JSON.stringify(appSettings));
   }, [users, sessions, appSettings]);
 
-  // --- Cloud Sync Core ---
   const fetchFromCloud = useCallback(async () => {
     if (!appSettings.cloudId) return;
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const response = await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`, {
-        headers: { 'Accept': 'application/json' }
-      });
+      const isNpoint = appSettings.cloudId.length < 20; // Enkel check för ID-format
+      const url = isNpoint 
+        ? `https://api.npoint.io/${appSettings.cloudId}`
+        : `https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`;
+
+      const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (response.ok) {
         const data = await response.json();
-        if (data.users) setUsers(data.users);
-        if (data.sessions) setSessions(data.sessions);
-        if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice }));
+        const content = isNpoint ? data : data; // npoint returnerar innehållet direkt
+        if (content.users) setUsers(content.users);
+        if (content.sessions) setSessions(content.sessions);
+        if (content.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: content.settings.kwhPrice }));
         setCloudStatus('success');
       } else {
         setCloudStatus('error');
@@ -114,12 +114,14 @@ const App: React.FC = () => {
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`, {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+      const isNpoint = appSettings.cloudId.length < 20;
+      const url = isNpoint 
+        ? `https://api.npoint.io/${appSettings.cloudId}`
+        : `https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`;
+
+      await fetch(url, {
+        method: isNpoint ? 'POST' : 'PUT', // npoint använder POST för att skriva över
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           users: overrideUsers || syncRef.current.users, 
           sessions: overrideSessions || syncRef.current.sessions, 
@@ -144,47 +146,33 @@ const App: React.FC = () => {
 
   const createCloudHub = async () => {
     setIsSyncing(true);
+    // Försök först med npoint.io som är extremt pålitligt och CORS-vänligt
     try {
-      const response = await fetch('https://jsonblob.com/api/jsonBlob', {
+      const response = await fetch('https://api.npoint.io', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ users, sessions, settings: appSettings })
       });
       
-      // JSONBlob returnerar ID i "Location" headern. 
-      // Vissa webbläsare döljer denna header pga säkerhet (CORS).
-      // Vi försöker extrahera ID:t på två sätt.
-      const locationHeader = response.headers.get('Location');
-      let id = '';
-      
-      if (locationHeader) {
-        id = locationHeader.split('/').pop() || '';
-      } else {
-        // Om headern saknas kan vi prova att titta på response.url om den ändrats
-        const urlParts = response.url.split('/');
-        const lastPart = urlParts[urlParts.length - 1];
-        if (lastPart !== 'jsonBlob') id = lastPart;
+      if (response.ok) {
+        const data = await response.json();
+        if (data.id) {
+          setAppSettings(prev => ({ ...prev, cloudId: data.id }));
+          setTempCloudId(data.id);
+          alert(`Succé! Molnhub skapad via npoint.\nID: ${data.id}\n\nDela detta ID med dina kollegor.`);
+          return;
+        }
       }
-      
-      if (id && id.length > 5) {
-        setAppSettings(prev => ({ ...prev, cloudId: id }));
-        setTempCloudId(id);
-        alert(`Klart! Din gemensamma hub är skapad.\nID: ${id}\n\nDela detta ID med dina kollegor.`);
-      } else {
-        throw new Error("Kunde inte läsa ut ID från servern.");
-      }
+      throw new Error("Npoint failed");
     } catch (e) {
+      // Om även npoint misslyckas, ge ett pedagogiskt felmeddelande
       console.error(e);
-      alert("Något gick fel vid skapandet. Detta kan bero på din webbläsares säkerhetsinställningar. Försök igen eller be en kollega prova!");
+      alert("Kunde inte skapa molnhub automatiskt. Testa att skriva in ett eget valfritt ID eller försök igen senare.");
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // --- Handlers ---
   const toggleSession = (date: Date) => {
     if (!activeUserId) return;
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -238,7 +226,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A professional 3D animated portrait of ${formData.name}, friendly face, bright studio lighting, minimalist style, centered, high quality.`;
+      const prompt = `A professional 3D animated character portrait of a person named ${formData.name}, Pixar style, high detail, studio lighting, simple colorful background, 8k resolution.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -257,8 +245,8 @@ const App: React.FC = () => {
 
   const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
-    // DiceBear v7 - Mycket stabilare för standard-avatarer
-    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
+    // Lorelei - En av de snyggaste och mest stabila stilarna
+    return `https://api.dicebear.com/9.x/lorelei/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
   };
 
   const activeUser = users.find(u => u.id === activeUserId);
@@ -308,9 +296,6 @@ const App: React.FC = () => {
                         src={getAvatarUrl(u)} 
                         className="w-full h-full object-cover" 
                         alt={u.name} 
-                        onError={(e) => {
-                          e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(u.name)}&background=random&size=200&bold=true`;
-                        }}
                       />
                     </div>
                     <div className="space-y-2 text-center">
@@ -342,9 +327,6 @@ const App: React.FC = () => {
                     src={getAvatarUrl(activeUser!)} 
                     alt="user" 
                     className="w-full h-full object-cover" 
-                    onError={(e) => {
-                      e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(activeUser?.name || 'User')}&background=random&size=200&bold=true`;
-                    }}
                   />
                 </div>
                 <div className="flex flex-col">
@@ -413,7 +395,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-xl w-full shadow-2xl relative my-8 animate-in slide-in-from-bottom duration-400">
@@ -457,7 +438,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* User Creation Modal */}
       {userModal.show && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-md w-full shadow-2xl relative animate-in zoom-in duration-300">
@@ -471,9 +451,6 @@ const App: React.FC = () => {
                       src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} 
                       className="w-full h-full object-cover" 
                       alt="Preview" 
-                      onError={(e) => {
-                        e.currentTarget.src = `https://ui-avatars.com/api/?name=${encodeURIComponent(formData.name || 'User')}&background=random&size=200&bold=true`;
-                      }}
                     />
                   )}
                 </div>
