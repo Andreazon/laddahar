@@ -38,7 +38,6 @@ function getStartOfMonth(date: Date): Date {
 }
 
 const App: React.FC = () => {
-  // State initialization
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('laddahar_users');
     return saved ? JSON.parse(saved) : INITIAL_USERS;
@@ -55,7 +54,6 @@ const App: React.FC = () => {
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
-  // UI state
   const [activeUserId, setActiveUserId] = useState<string | null>(null);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [userModal, setUserModal] = useState<{show: boolean, mode: 'add' | 'edit', userId?: string}>({show: false, mode: 'add'});
@@ -65,33 +63,31 @@ const App: React.FC = () => {
   const [cloudStatus, setCloudStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
   const [copiedId, setCopiedId] = useState(false);
   
-  // Refs for stable background sync without dependency loop
   const syncRef = useRef({ users, sessions, appSettings });
   useEffect(() => {
     syncRef.current = { users, sessions, appSettings };
   }, [users, sessions, appSettings]);
 
-  // Form state
   const [formData, setFormData] = useState({ 
     name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: ''
   });
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
 
-  // Persistent local storage
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
     localStorage.setItem('laddahar_settings', JSON.stringify(appSettings));
   }, [users, sessions, appSettings]);
 
-  // --- Cloud Sync Core ---
   const fetchFromCloud = useCallback(async () => {
     if (!appSettings.cloudId) return;
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const response = await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`);
+      const response = await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`, {
+        headers: { 'Accept': 'application/json' }
+      });
       if (response.ok) {
         const data = await response.json();
         if (data.users) setUsers(data.users);
@@ -114,16 +110,20 @@ const App: React.FC = () => {
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`, {
+      const response = await fetch(`https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ 
           users: overrideUsers || syncRef.current.users, 
           sessions: overrideSessions || syncRef.current.sessions, 
           settings: { kwhPrice: appSettings.kwhPrice } 
         })
       });
-      setCloudStatus('success');
+      if (response.ok) setCloudStatus('success');
+      else setCloudStatus('error');
     } catch (e) {
       setCloudStatus('error');
     } finally {
@@ -132,10 +132,9 @@ const App: React.FC = () => {
     }
   };
 
-  // Background fetch every 30s
   useEffect(() => {
     if (!appSettings.cloudId) return;
-    fetchFromCloud(); // Initial fetch
+    fetchFromCloud();
     const timer = setInterval(fetchFromCloud, 30000);
     return () => clearInterval(timer);
   }, [appSettings.cloudId, fetchFromCloud]);
@@ -145,26 +144,34 @@ const App: React.FC = () => {
     try {
       const response = await fetch('https://jsonblob.com/api/jsonBlob', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ users, sessions, settings: appSettings })
       });
+      
+      if (!response.ok) throw new Error("Server error");
+      
       const location = response.headers.get('Location');
       if (location) {
         const id = location.split('/').pop();
         if (id) {
           setAppSettings(prev => ({ ...prev, cloudId: id }));
           setTempCloudId(id);
-          alert(`Molnhub skapad! ID: ${id}`);
+          alert(`Molnhub skapad! Dela detta ID med kollegorna: ${id}`);
+          return;
         }
       }
+      throw new Error("Missing Location Header");
     } catch (e) {
-      alert("Fel vid skapande av molnhub.");
+      console.error(e);
+      alert("Kunde inte skapa molnhub. Detta beror ofta på nätverksbegränsningar eller att tjänsten är tillfälligt nere. Försök igen om en stund.");
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // --- Handlers ---
   const toggleSession = (date: Date) => {
     if (!activeUserId) return;
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -218,7 +225,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A professional, joyful, 3D Pixar-style portrait of a GROWN MAN named ${formData.name}. Masculine features, short stylish hair, bright smile, trendy business casual clothing, studio lighting.`;
+      const prompt = `A professional portrait of a man named ${formData.name}, 3D Pixar animation style, bright smile, trendy business casual clothing, studio lighting, solid blue background.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -237,7 +244,8 @@ const App: React.FC = () => {
 
   const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
-    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.name}&radius=50&backgroundColor=b6e3f4,c0aede,d1d4f9&top[]=shortHair&top[]=frizzle&top[]=shaggy&top[]=shaggyMullet&facialHair[]=beardLight&facialHairProbability=50`;
+    // URL-kodade filter för DiceBear för att undvika trasiga bilder
+    return `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&radius=50&backgroundColor=b6e3f4,c0aede,d1d4f9&top%5B%5D=shortHair&top%5B%5D=frizzle&top%5B%5D=shaggy&top%5B%5D=shaggyMullet&facialHair%5B%5D=beardLight&facialHairProbability=50`;
   };
 
   const activeUser = users.find(u => u.id === activeUserId);
@@ -248,7 +256,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans selection:bg-emerald-100">
-      {/* Cloud Status Overlay */}
       <div className="fixed top-0 left-0 right-0 z-50 h-1 bg-slate-100 overflow-hidden">
         {isSyncing && <div className="h-full bg-emerald-500 animate-[progress_2s_infinite] w-1/3"></div>}
       </div>
@@ -284,7 +291,7 @@ const App: React.FC = () => {
                 <div key={u.id} className="group relative">
                   <button onClick={() => setActiveUserId(u.id)} className="w-full bg-white p-10 rounded-[4rem] border border-slate-100 hover:shadow-2xl hover:shadow-emerald-100 transition-all flex flex-col items-center gap-6 group shadow-sm hover:-translate-y-3 duration-300">
                     <div className="w-32 h-32 bg-slate-50 rounded-full overflow-hidden border-4 border-white shadow-lg relative z-10 transition-transform group-hover:scale-105">
-                      <img src={getAvatarUrl(u)} className="w-full h-full object-cover" alt={u.name} />
+                      <img src={getAvatarUrl(u)} className="w-full h-full object-cover" alt={u.name} onError={(e) => { e.currentTarget.src = `https://api.dicebear.com/7.x/initials/svg?seed=${u.name}`; }} />
                     </div>
                     <div className="space-y-2 text-center">
                       <div className="font-black text-slate-800 text-2xl leading-tight">{u.name}</div>
@@ -311,7 +318,7 @@ const App: React.FC = () => {
               <button onClick={() => setActiveUserId(null)} className="flex items-center gap-3 px-10 py-5 bg-white border border-slate-100 rounded-3xl text-slate-600 hover:text-emerald-500 font-black text-xs uppercase tracking-[0.2em] shadow-sm hover:shadow-md transition-all active:scale-95"><ArrowLeft size={16} /> Tillbaka</button>
               <div className="flex items-center gap-5 bg-white px-8 py-4 rounded-[2rem] border border-slate-100 shadow-sm">
                 <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-emerald-100 shadow-inner">
-                  <img src={getAvatarUrl(activeUser!)} alt="user" className="w-full h-full object-cover" />
+                  <img src={getAvatarUrl(activeUser!)} alt="user" className="w-full h-full object-cover" onError={(e) => { e.currentTarget.src = `https://api.dicebear.com/7.x/initials/svg?seed=${activeUser?.name}`; }} />
                 </div>
                 <div className="flex flex-col">
                   <span className="text-base font-black text-slate-800">{activeUser?.name}</span>
@@ -354,7 +361,7 @@ const App: React.FC = () => {
                 <div className="bg-slate-900 text-white p-14 rounded-[4.5rem] shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[520px]">
                   <div className="absolute -top-10 -right-10 opacity-5 pointer-events-none rotate-12"><Zap size={400} fill="white" /></div>
                   <div>
-                    <h3 className="text-slate-500 text-[11px] font-black uppercase tracking-[0.4em] mb-8">Månadens Kostnad</h3>
+                    <h3 className="text-slate-500 text-[11px] font-black uppercase tracking-[0.4em] mb-8">Kostnad ({format(currentDate, 'MMMM', { locale: sv })})</h3>
                     <div className="flex items-baseline gap-4">
                       <span className="text-9xl font-black tabular-nums tracking-tighter">{totalCost.toFixed(2)}</span>
                       <span className="text-3xl font-bold text-emerald-400">SEK</span>
@@ -379,7 +386,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Settings Modal */}
       {showSettings && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-xl w-full shadow-2xl relative my-8 animate-in slide-in-from-bottom duration-400">
@@ -395,7 +401,7 @@ const App: React.FC = () => {
 
               <section className="pt-14 border-t border-slate-100">
                 <h2 className="text-4xl font-black mb-10 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
-                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Koppla ihop med kollegornas grid. Skapa en ny hub eller ange ID från en befintlig.</p>
+                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Koppla ihop med kollegornas grid genom att dela ett gemensamt Hub-ID.</p>
                 <div className="space-y-5">
                   <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID</label>
                   <div className="flex gap-4">
@@ -423,7 +429,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* User Creation Modal */}
       {userModal.show && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-md w-full shadow-2xl relative animate-in zoom-in duration-300">
@@ -432,7 +437,7 @@ const App: React.FC = () => {
             <div className="flex flex-col items-center mb-12">
               <div className="relative group">
                 <div className="w-44 h-44 bg-slate-50 rounded-full overflow-hidden border-4 border-slate-50 shadow-inner flex items-center justify-center relative">
-                  {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : <img src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} className="w-full h-full object-cover" alt="Preview" />}
+                  {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : <img src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} className="w-full h-full object-cover" alt="Preview" onError={(e) => { e.currentTarget.src = `https://api.dicebear.com/7.x/initials/svg?seed=${formData.name}`; }} />}
                 </div>
                 <button type="button" onClick={generateAIAvatar} disabled={isGeneratingImage || !formData.name} className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"><Sparkles size={32} /></button>
               </div>
