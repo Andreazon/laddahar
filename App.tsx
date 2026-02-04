@@ -85,18 +85,14 @@ const App: React.FC = () => {
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const isNpoint = appSettings.cloudId.length < 20; // Enkel check för ID-format
-      const url = isNpoint 
-        ? `https://api.npoint.io/${appSettings.cloudId}`
-        : `https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`;
-
+      // Vi prioriterar npoint.io-formatet då det är mest stabilt
+      const url = `https://api.npoint.io/${appSettings.cloudId}`;
       const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
       if (response.ok) {
         const data = await response.json();
-        const content = isNpoint ? data : data; // npoint returnerar innehållet direkt
-        if (content.users) setUsers(content.users);
-        if (content.sessions) setSessions(content.sessions);
-        if (content.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: content.settings.kwhPrice }));
+        if (data.users) setUsers(data.users);
+        if (data.sessions) setSessions(data.sessions);
+        if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice }));
         setCloudStatus('success');
       } else {
         setCloudStatus('error');
@@ -114,13 +110,9 @@ const App: React.FC = () => {
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const isNpoint = appSettings.cloudId.length < 20;
-      const url = isNpoint 
-        ? `https://api.npoint.io/${appSettings.cloudId}`
-        : `https://jsonblob.com/api/jsonBlob/${appSettings.cloudId}`;
-
+      const url = `https://api.npoint.io/${appSettings.cloudId}`;
       await fetch(url, {
-        method: isNpoint ? 'POST' : 'PUT', // npoint använder POST för att skriva över
+        method: 'POST', // npoint använder POST för att uppdatera innehåll
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           users: overrideUsers || syncRef.current.users, 
@@ -140,15 +132,15 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud();
-    const timer = setInterval(fetchFromCloud, 30000);
+    const timer = setInterval(fetchFromCloud, 60000); // Minskat till var 60:e sekund för att spara batteri/nät
     return () => clearInterval(timer);
   }, [appSettings.cloudId, fetchFromCloud]);
 
   const createCloudHub = async () => {
     setIsSyncing(true);
-    // Försök först med npoint.io som är extremt pålitligt och CORS-vänligt
     try {
-      const response = await fetch('https://api.npoint.io', {
+      // KORREKT ADRESS: https://api.npoint.io/bins
+      const response = await fetch('https://api.npoint.io/bins', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ users, sessions, settings: appSettings })
@@ -156,18 +148,18 @@ const App: React.FC = () => {
       
       if (response.ok) {
         const data = await response.json();
-        if (data.id) {
-          setAppSettings(prev => ({ ...prev, cloudId: data.id }));
-          setTempCloudId(data.id);
-          alert(`Succé! Molnhub skapad via npoint.\nID: ${data.id}\n\nDela detta ID med dina kollegor.`);
+        const id = data.id || data.binId;
+        if (id) {
+          setAppSettings(prev => ({ ...prev, cloudId: id }));
+          setTempCloudId(id);
+          alert(`Hub skapad!\nID: ${id}\n\nDela detta ID med dina kollegor så synkas ni automatiskt.`);
           return;
         }
       }
-      throw new Error("Npoint failed");
+      throw new Error("Kunde inte läsa ut ID från npoint");
     } catch (e) {
-      // Om även npoint misslyckas, ge ett pedagogiskt felmeddelande
       console.error(e);
-      alert("Kunde inte skapa molnhub automatiskt. Testa att skriva in ett eget valfritt ID eller försök igen senare.");
+      alert("Kunde inte skapa hubben automatiskt. Försök igen om en liten stund.");
     } finally {
       setIsSyncing(false);
     }
@@ -226,7 +218,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A professional 3D animated character portrait of a person named ${formData.name}, Pixar style, high detail, studio lighting, simple colorful background, 8k resolution.`;
+      const prompt = `A clean, professional 3D animated avatar of a person named ${formData.name}, Pixar style, soft lighting, vibrant colors, neutral background, high definition.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -245,8 +237,8 @@ const App: React.FC = () => {
 
   const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
-    // Lorelei - En av de snyggaste och mest stabila stilarna
-    return `https://api.dicebear.com/9.x/lorelei/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
+    // Avataaars - Den mest stabila och snabbaste stilen
+    return `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
   };
 
   const activeUser = users.find(u => u.id === activeUserId);
@@ -296,6 +288,7 @@ const App: React.FC = () => {
                         src={getAvatarUrl(u)} 
                         className="w-full h-full object-cover" 
                         alt={u.name} 
+                        key={`${u.name}-${u.avatarUrl}`}
                       />
                     </div>
                     <div className="space-y-2 text-center">
@@ -451,6 +444,7 @@ const App: React.FC = () => {
                       src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} 
                       className="w-full h-full object-cover" 
                       alt="Preview" 
+                      key={`${formData.name}-${formData.avatarUrl}`}
                     />
                   )}
                 </div>
