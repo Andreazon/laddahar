@@ -18,4 +18,5 @@ export interface ChargingSession {
 
 export interface AppSettings {
   kwhPrice: number; // SEK per kWh
+  cloudId?: string; // ID för molnsynk via JSONBlob
 }
