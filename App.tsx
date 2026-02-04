@@ -82,13 +82,9 @@ const App: React.FC = () => {
     localStorage.setItem('laddahar_settings', JSON.stringify(appSettings));
   }, [users, sessions, appSettings]);
 
-  // --- Cloud Logic ---
-  const getCloudUrl = (id: string) => {
-    // Om ID:t ser ut som ett UUID är det JSONBlob, annars antar vi npoint
-    return id.length > 20 
-      ? `https://jsonblob.com/api/jsonBlob/${id}`
-      : `https://api.npoint.io/${id}`;
-  };
+  // --- Cloud Logic (KVDB implementation) ---
+  // Vi använder en unik prefix för att inte krocka med andra appar
+  const getCloudUrl = (id: string) => `https://kvdb.io/75YvWv6Q9Z1Q4Z8Q1Q4Z8Q/laddahar_v2_${id.toLowerCase().trim()}`;
 
   const fetchFromCloud = useCallback(async (manualId?: string) => {
     const id = manualId || appSettings.cloudId;
@@ -101,17 +97,27 @@ const App: React.FC = () => {
         headers: { 'Accept': 'application/json' },
         cache: 'no-store'
       });
+      
       if (response.ok) {
         const data = await response.json();
-        if (data.users) setUsers(data.users);
-        if (data.sessions) setSessions(data.sessions);
-        if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice }));
-        setCloudStatus('success');
-        if (manualId) setAppSettings(prev => ({ ...prev, cloudId: manualId }));
+        if (data && typeof data === 'object') {
+          if (data.users) setUsers(data.users);
+          if (data.sessions) setSessions(data.sessions);
+          if (data.settings?.kwhPrice) setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice }));
+          setCloudStatus('success');
+          if (manualId) setAppSettings(prev => ({ ...prev, cloudId: manualId }));
+        }
+      } else if (response.status === 404) {
+        // Hinken finns inte ännu
+        if (manualId) {
+          alert("Hittade ingen data med det ID:t. Om du vill skapa en ny hink med detta namn, klicka på 'Initialisera'.");
+        }
+        setCloudStatus('error');
       } else {
         setCloudStatus('error');
       }
     } catch (e) {
+      console.error("Fetch error:", e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -126,25 +132,27 @@ const App: React.FC = () => {
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const isJsonBlob = id.length > 20;
-      const method = isJsonBlob ? 'PUT' : 'POST';
-      
+      const payload = { 
+        users: overrideUsers || syncRef.current.users, 
+        sessions: overrideSessions || syncRef.current.sessions, 
+        settings: { kwhPrice: appSettings.kwhPrice },
+        lastUpdated: new Date().toISOString()
+      };
+
       const response = await fetch(getCloudUrl(id), {
-        method: method,
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          users: overrideUsers || syncRef.current.users, 
-          sessions: overrideSessions || syncRef.current.sessions, 
-          settings: { kwhPrice: appSettings.kwhPrice } 
-        })
+        body: JSON.stringify(payload)
       });
       
       if (response.ok) {
         setCloudStatus('success');
+        if (manualId) setAppSettings(prev => ({ ...prev, cloudId: manualId }));
       } else {
         setCloudStatus('error');
       }
     } catch (e) {
+      console.error("Push error:", e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -155,64 +163,27 @@ const App: React.FC = () => {
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud();
-    const timer = setInterval(fetchFromCloud, 60000);
+    const timer = setInterval(() => fetchFromCloud(), 30000); // Kolla var 30:e sekund
     return () => clearInterval(timer);
   }, [appSettings.cloudId, fetchFromCloud]);
 
   const createCloudHub = async () => {
-    setIsSyncing(true);
-    try {
-      // Försök först JSONBlob
-      const jbRes = await fetch('https://jsonblob.com/api/jsonBlob', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ users, sessions, settings: appSettings })
-      });
-      
-      const location = jbRes.headers.get('Location');
-      if (location) {
-        const id = location.split('/').pop();
-        if (id) {
-          setAppSettings(prev => ({ ...prev, cloudId: id }));
-          setTempCloudId(id);
-          alert(`Hub skapad!\nID: ${id}`);
-          return;
-        }
-      }
-
-      // Reserv: npoint
-      const npRes = await fetch('https://api.npoint.io/bins', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ users, sessions, settings: appSettings })
-      });
-      
-      if (npRes.ok) {
-        const data = await npRes.json();
-        const id = data.id || data.binId;
-        if (id) {
-          setAppSettings(prev => ({ ...prev, cloudId: id }));
-          setTempCloudId(id);
-          alert(`Hub skapad (Reserv)!\nID: ${id}`);
-          return;
-        }
-      }
-
-      throw new Error("Kunde inte skapa på någon tjänst");
-    } catch (e) {
-      console.error(e);
-      alert("Kunde inte skapa hubben automatiskt. Du kan prova att skriva in ett valfritt eget ID och klicka på 'Initialisera' istället.");
-    } finally {
-      setIsSyncing(false);
+    const randomId = Math.random().toString(36).substring(2, 10).toUpperCase();
+    setTempCloudId(randomId);
+    if (window.confirm(`Vill du skapa en ny hub med slumpmässigt ID: "${randomId}"?`)) {
+      await pushToCloud(sessions, users, randomId);
+      alert(`Hub skapad! ID: ${randomId}`);
     }
   };
 
   const handleManualInitialize = async () => {
-    if (!tempCloudId) return;
-    if (window.confirm(`Vill du skapa en ny hub med ID: "${tempCloudId}" och ladda upp din lokala data dit?`)) {
+    if (!tempCloudId || tempCloudId.length < 3) {
+      alert("Ange ett ID på minst 3 tecken.");
+      return;
+    }
+    if (window.confirm(`Vill du skapa en ny gemensam hub med namnet "${tempCloudId}"?\n\nDetta kommer ladda upp din nuvarande data som startpunkt.`)) {
       await pushToCloud(sessions, users, tempCloudId);
-      setAppSettings(prev => ({ ...prev, cloudId: tempCloudId }));
-      alert("Hubben har initialiserats med din lokala data!");
+      alert(`Klart! "${tempCloudId}" är nu redo att användas av alla.`);
     }
   };
 
@@ -270,7 +241,7 @@ const App: React.FC = () => {
     setIsGeneratingImage(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A professional 3D animated character portrait of ${formData.name}, friendly face, bright studio lighting, minimalist style, 8k.`;
+      const prompt = `A clean 3D character avatar of ${formData.name}, friendly and professional, Pixar style, high quality.`;
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: { parts: [{ text: prompt }] },
@@ -438,13 +409,13 @@ const App: React.FC = () => {
 
               <section className="pt-14 border-t border-slate-100">
                 <h2 className="text-4xl font-black mb-10 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
-                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Koppla ihop med kollegornas grid. Ange ett eget ID eller skapa en ny hub.</p>
+                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Ange ett namn för din Hub (t.ex. "ForetagetLaddar") och klicka på Initialisera.</p>
                 <div className="space-y-6">
                   <div className="space-y-3">
                     <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID (Valfritt namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ForetagetLaddar2024" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ForetagetLaddar" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
                         {appSettings.cloudId && (
                           <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
                             {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
@@ -457,7 +428,7 @@ const App: React.FC = () => {
 
                   <div className="grid grid-cols-2 gap-4">
                     <button onClick={createCloudHub} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
-                      {isSyncing ? <Loader2 className="animate-spin" size={18} /> : <Database size={18} />} Auto-skapa
+                      {isSyncing ? <Loader2 className="animate-spin" size={18} /> : <Database size={18} />} Slumpa ID
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
                       <UploadCloud size={18} /> Initialisera
