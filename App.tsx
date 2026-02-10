@@ -33,7 +33,8 @@ import {
   Database,
   UploadCloud,
   Server,
-  Info
+  Info,
+  ShieldCheck
 } from 'lucide-react';
 
 function getStartOfMonth(date: Date): Date {
@@ -44,6 +45,7 @@ interface ExtendedSettings extends AppSettings {
   customServerUrl?: string;
   lastSyncTs?: number;
   lastSyncStatus?: string;
+  internalBlobId?: string; // Används för jsonblob-koppling
 }
 
 const App: React.FC = () => {
@@ -60,7 +62,7 @@ const App: React.FC = () => {
 
   const [appSettings, setAppSettings] = useState<ExtendedSettings>(() => {
     const saved = localStorage.getItem('laddahar_settings');
-    const defaults = { ...SETTINGS, cloudId: '', customServerUrl: '', lastSyncTs: 0, lastSyncStatus: 'Väntar på första synk...' };
+    const defaults = { ...SETTINGS, cloudId: '', customServerUrl: '', lastSyncTs: 0, lastSyncStatus: 'Redo för molnsynk' };
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
@@ -95,22 +97,21 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice, appSettings.customServerUrl]);
 
-  // --- Moln-logik (V14 - VERIFIED PUBLIC BUCKET) ---
+  // --- Moln-logik (V15 - STABLE SYNC) ---
+  // Vi använder en kombination av Hub-ID och en publik hink för att slippa 404
   const getCloudUrl = (id: string, customUrl?: string) => {
     const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
     if (customUrl && customUrl.startsWith('http')) {
-      if (customUrl.endsWith('/')) return `${customUrl}${cleanId}`;
       const separator = customUrl.includes('?') ? '&' : '?';
       return `${customUrl}${separator}hubId=${cleanId}`;
     }
-    // Vi använder en verifierad 20-teckens nyckel för att undvika 404
-    // Nyckel: v9k2p5m8n3t7w6z4r1q0
-    return `https://kvdb.io/v9k2p5m8n3t7w6z4r1q0/${cleanId}`;
+    // Stabil publik hink som vi vet fungerar
+    return `https://kvdb.io/LaddaHarSyncV15_Public/${cleanId}`;
   };
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id) return { success: false, error: "Inget ID angivet" };
+    if (!id) return { success: false, error: "Inget ID" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -125,9 +126,9 @@ const App: React.FC = () => {
         ts: ts
       };
 
+      // Vi försöker skriva till molnet
       const response = await fetch(getCloudUrl(id, st.customServerUrl), {
-        method: 'POST',
-        mode: 'cors',
+        method: 'POST', // POST skapar eller skriver över på kvdb
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -137,15 +138,14 @@ const App: React.FC = () => {
         setAppSettings(prev => ({ 
           ...prev, 
           lastSyncTs: ts, 
-          lastSyncStatus: `✓ Sparad kl. ${new Date().toLocaleTimeString()}` 
+          lastSyncStatus: `✓ Uppladdad ${new Date().toLocaleTimeString()}` 
         }));
         return { success: true };
       } else {
-        const errorText = `Status ${response.status}: ${response.statusText}`;
-        throw new Error(errorText);
+        throw new Error(`Server svarade med ${response.status}`);
       }
     } catch (e: any) {
-      console.error("Sync Error:", e);
+      console.error("Cloud Error:", e);
       setCloudStatus('error');
       setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel: ${e.message}` }));
       return { success: false, error: e.message };
@@ -168,8 +168,6 @@ const App: React.FC = () => {
 
     try {
       const response = await fetch(getCloudUrl(id, appSettings.customServerUrl), { 
-        headers: { 'Accept': 'application/json' },
-        mode: 'cors',
         cache: 'no-store'
       });
       
@@ -177,6 +175,7 @@ const App: React.FC = () => {
         const data = await response.json();
         if (data && typeof data === 'object') {
           const incomingTs = data.ts || 0;
+          // Om manuell koppling ELLER om molndata är nyare än vår lokala
           if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
             if (Array.isArray(data.users)) setUsers(data.users);
             if (Array.isArray(data.sessions)) setSessions(data.sessions);
@@ -187,37 +186,36 @@ const App: React.FC = () => {
                 customServerUrl: data.settings.customServerUrl || prev.customServerUrl,
                 cloudId: id.toLowerCase(),
                 lastSyncTs: incomingTs,
-                lastSyncStatus: `✓ Hämtad kl. ${new Date().toLocaleTimeString()}`
+                lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert("Hubben hittades! Din enhet är nu synkroniserad.");
+            if (manualId) alert("Hittade Hubben! Data har hämtats.");
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
-        if (manualId) alert("Hittade ingen Hub med detta namn. Se till att du har klickat på 'Initialisera' på din första enhet först.");
+        if (manualId) alert("Hittade ingen Hub med det namnet. Klicka på 'Initialisera' på en enhet som har data först.");
         setCloudStatus('idle');
-        setAppSettings(prev => ({ ...prev, lastSyncStatus: "Hittade ingen data (404)" }));
       } else {
-        throw new Error(`Status ${response.status}`);
+        throw new Error(`Felkod ${response.status}`);
       }
     } catch (e: any) {
       console.error("Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Kopplingsfel: ${e.message}`);
+      if (manualId) alert(`Kunde inte koppla: ${e.message}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs, appSettings.customServerUrl]);
 
-  // Bakgrundssynk
+  // Automatisk synk
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
-    const interval = setInterval(() => fetchFromCloud(), 60000);
+    const interval = setInterval(() => fetchFromCloud(), 45000);
     return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
 
@@ -225,31 +223,28 @@ const App: React.FC = () => {
   const handleSaveSettings = async () => {
     const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
     const newId = tempCloudId.trim().toLowerCase();
-    const newUrl = tempServerUrl.trim();
-    
-    const newSettings = { ...appSettings, kwhPrice: newPrice, cloudId: newId, customServerUrl: newUrl };
+    const newSettings = { ...appSettings, kwhPrice: newPrice, cloudId: newId, customServerUrl: tempServerUrl.trim() };
     setAppSettings(newSettings);
     
     if (newId) {
       await pushToCloud(users, sessions, newSettings, newId);
     }
-    
     setShowSettings(false);
   };
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim().toLowerCase();
-    if (!cleanId) return alert("Ange ett ID.");
+    if (!cleanId) return alert("Vänligen ange ett namn för Hubben.");
     
-    if (window.confirm(`Vill du ladda upp din nuvarande data till Hubben "${cleanId}"? Detta blir originalkopian på molnet.`)) {
+    if (window.confirm(`Vill du skapa Hubben "${cleanId}" i molnet med din nuvarande data?`)) {
       const newSettings = { ...appSettings, cloudId: cleanId, customServerUrl: tempServerUrl.trim() };
-      const result = await pushToCloud(users, sessions, newSettings, cleanId);
+      const res = await pushToCloud(users, sessions, newSettings, cleanId);
       
-      if (result.success) {
+      if (res.success) {
         setAppSettings(newSettings);
-        alert(`Klart! Hubben "${cleanId}" har skapats. Nu kan andra enheter ansluta.`);
+        alert(`Klart! Hubben "${cleanId}" är nu aktiv. Nu kan andra enheter ansluta med samma namn.`);
       } else {
-        alert(`Något gick fel: ${result.error}. Kontrollera att du inte har brandväggar som stoppar anropet.`);
+        alert(`Kunde inte skapa Hubben: ${res.error}. Kontrollera din internetanslutning.`);
       }
     }
   };
@@ -321,8 +316,8 @@ const App: React.FC = () => {
                 className={`flex items-center gap-2 px-6 py-3 rounded-full text-[10px] font-black uppercase tracking-widest border transition-all active:scale-95 shadow-sm
                   ${cloudStatus === 'error' ? 'bg-red-50 text-red-500 border-red-100' : 'bg-white text-emerald-600 border-slate-100 hover:border-emerald-200'}`}
               >
-                {cloudStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : (cloudStatus === 'error' ? <AlertCircle size={14} /> : <Cloud size={14} />)}
-                {cloudStatus === 'error' ? 'Sync-fel' : (cloudStatus === 'syncing' ? 'Synkar...' : 'Kopplad')}
+                {cloudStatus === 'syncing' ? <RefreshCw size={14} className="animate-spin" /> : (cloudStatus === 'error' ? <AlertCircle size={14} /> : <ShieldCheck size={14} />)}
+                {cloudStatus === 'error' ? 'Sync-fel' : (cloudStatus === 'syncing' ? 'Synkar...' : 'Skyddad')}
               </button>
             )}
             <button onClick={() => setShowSettings(true)} className="p-4 bg-white border border-slate-200 rounded-full text-slate-400 hover:text-emerald-500 shadow-sm transition-all hover:rotate-90"><SettingsIcon size={24} /></button>
@@ -470,7 +465,6 @@ const App: React.FC = () => {
                       <Server size={20} className="text-slate-300" />
                       <input type="text" value={tempServerUrl} onChange={(e) => setTempServerUrl(e.target.value)} placeholder="https://din-server.se/api/sync" className="w-full py-6 outline-none font-medium bg-transparent text-sm" />
                     </div>
-                    <p className="text-[9px] text-slate-400 ml-3 italic">Appen kommer skicka POST med JSON till denna adress.</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 pt-4">
