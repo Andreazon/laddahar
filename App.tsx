@@ -93,9 +93,10 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (V22 - FIXED KVDB ENGINE) ---
-  // KRITISKT: kvdb.io KRÄVER EXAKT 20 TECKEN FÖR BUCKET ID.
-  const BUCKET_ID = "laddahar2025pubv2ab"; // 1-2-3-4-5-6-7-8-9-0-1-2-3-4-5-6-7-8-9-0 (Exakt 20)
+  // --- Moln-logik (V23 - EXACT 20 CHAR BUCKET) ---
+  // kvdb.io KRÄVER EXAKT 20 TECKEN FÖR BUCKET ID.
+  // l(1)a(2)d(3)d(4)a(5)h(6)a(7)r(8)s(9)y(10)n(11)k(12)2(13)0(14)2(15)5(16)v(17)3(18)a(19)b(20)
+  const BUCKET_ID = "laddaharsynk2025v3ab"; 
   
   const getCloudUrl = (key: string) => {
     const cleanKey = key.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -136,7 +137,7 @@ const App: React.FC = () => {
         return { success: true };
       } else {
         const errText = await response.text();
-        throw new Error(errText.includes("invalid") ? "Serverfel: Prova ett annat namn" : errText);
+        throw new Error(errText || `Serverfel ${response.status}`);
       }
     } catch (e: any) {
       console.error("Sync Error:", e);
@@ -235,7 +236,7 @@ const App: React.FC = () => {
         setAppSettings(newSettings);
         alert(`Klart! Hubben "${cleanId}" är nu aktiv.`);
       } else {
-        alert(`Kunde inte skapa Hubben: ${res.error}. Prova ett annat namn.`);
+        alert(`Kunde inte skapa Hubben: ${res.error}.`);
       }
     }
   };
@@ -436,7 +437,7 @@ const App: React.FC = () => {
                     <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (Ditt unika namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. laddnu" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ladda32132" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
                         {appSettings.cloudId && (
                           <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
                             {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
@@ -451,7 +452,7 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 pt-4">
-                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 10).toLowerCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
+                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 12).toLowerCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
                       <Database size={18} /> Slumpa ID
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId || isSyncing} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
