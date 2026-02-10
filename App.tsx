@@ -42,7 +42,6 @@ function getStartOfMonth(date: Date): Date {
 }
 
 interface ExtendedSettings extends AppSettings {
-  customServerUrl?: string;
   lastSyncTs?: number;
   lastSyncStatus?: string;
 }
@@ -61,7 +60,7 @@ const App: React.FC = () => {
 
   const [appSettings, setAppSettings] = useState<ExtendedSettings>(() => {
     const saved = localStorage.getItem('laddahar_settings');
-    const defaults = { ...SETTINGS, cloudId: '', customServerUrl: '', lastSyncTs: 0, lastSyncStatus: 'Redo för molnsynk' };
+    const defaults = { ...SETTINGS, cloudId: '', lastSyncTs: 0, lastSyncStatus: 'Redo för molnsynk' };
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
@@ -76,7 +75,7 @@ const App: React.FC = () => {
   
   const syncLockRef = useRef(false);
 
-  // Spara lokalt
+  // Spara lokalt som backup
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
@@ -94,18 +93,19 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (V18 - SECURE BODY SYNC) ---
-  // Vi använder KVDB men skickar nu JSON i BODY:n istället för URL:en.
-  const BUCKET_ID = "K9u7m5n3z1q8x6y4p2r0"; // Fast 20-teckensnyckel för projektet
+  // --- Moln-logik (V19 - PANTRY CLOUD ENGINE) ---
+  // Pantry Cloud är extremt stabilt för Key-Value lagring.
+  const PANTRY_ID = "76288597-4c31-4821-bc7a-590f05929837"; 
   
-  const getCloudUrl = (id: string) => {
-    const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-    return `https://kvdb.io/${BUCKET_ID}/${cleanId}`;
+  const getPantryUrl = (basketName: string) => {
+    // Rensa basket-namnet så det bara innehåller godkända tecken
+    const cleanName = basketName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    return `https://getpantry.cloud/apiv1/pantry/${PANTRY_ID}/basket/${cleanName}`;
   };
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id) return { success: false, error: "Inget ID" };
+    if (!id || id.length < 2) return { success: false, error: "ID för kort" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -117,15 +117,14 @@ const App: React.FC = () => {
         users: u, 
         sessions: s, 
         settings: { kwhPrice: st.kwhPrice },
-        ts: ts
+        ts: ts,
+        app: "LaddaHar_V19"
       };
 
-      // VIKTIGT: Skicka JSON i Body med POST
-      const response = await fetch(getCloudUrl(id), {
+      // Pantry kräver POST för att skapa/överskriva en basket
+      const response = await fetch(getPantryUrl(id), {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
       
@@ -134,15 +133,15 @@ const App: React.FC = () => {
         setAppSettings(prev => ({ 
           ...prev, 
           lastSyncTs: ts, 
-          lastSyncStatus: `✓ Uppladdad ${new Date().toLocaleTimeString()}` 
+          lastSyncStatus: `✓ Sparad i molnet ${new Date().toLocaleTimeString()}` 
         }));
         return { success: true };
       } else {
-        const errorText = await response.text();
-        throw new Error(`Serverfel ${response.status}: ${errorText || 'Okänt fel'}`);
+        const errorData = await response.text();
+        throw new Error(`Server svarade: ${response.status} ${errorData}`);
       }
     } catch (e: any) {
-      console.error("Cloud Push Error:", e);
+      console.error("Pantry Push Error:", e);
       setCloudStatus('error');
       setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel: ${e.message}` }));
       return { success: false, error: e.message };
@@ -158,21 +157,22 @@ const App: React.FC = () => {
   const fetchFromCloud = useCallback(async (manualId?: string) => {
     if (syncLockRef.current && !manualId) return;
     const id = (manualId || appSettings.cloudId)?.trim();
-    if (!id) return;
+    if (!id || id.length < 2) return;
     
     setIsSyncing(true);
     if (!manualId) setCloudStatus('syncing');
 
     try {
-      const response = await fetch(getCloudUrl(id), { 
-        cache: 'no-store'
+      const response = await fetch(getPantryUrl(id), { 
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
       });
       
       if (response.ok) {
         const data = await response.json();
         if (data && typeof data === 'object') {
           const incomingTs = data.ts || 0;
-          // Synka om det är manuellt anrop eller om molnet har nyare data
+          // Synka om det är manuellt anrop eller om molnet har nyare data (timestamp)
           if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
             if (Array.isArray(data.users)) setUsers(data.users);
             if (Array.isArray(data.sessions)) setSessions(data.sessions);
@@ -186,32 +186,33 @@ const App: React.FC = () => {
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert("Kopplad! Data har hämtats från Hubben.");
+            if (manualId) alert(`Kopplad till Hub "${id}"!`);
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
-        if (manualId) alert("Hittade ingen Hub med det namnet. Klicka på 'Initialisera' på en enhet som har din data först.");
+        if (manualId) alert(`Hubben "${id}" hittades inte. Du måste klicka på 'Initialisera' först för att skapa den.`);
         setCloudStatus('idle');
+        setAppSettings(prev => ({ ...prev, lastSyncStatus: "Ingen data i molnet (404)" }));
       } else {
-        throw new Error(`Kunde inte läsa från molnet (${response.status})`);
+        throw new Error(`Nätverksfel (${response.status})`);
       }
     } catch (e: any) {
-      console.error("Fetch Error:", e);
+      console.error("Pantry Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Kunde inte koppla: ${e.message}. Kontrollera din internetanslutning.`);
+      if (manualId) alert(`Kunde inte hämta Hubben: ${e.message}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs]);
 
-  // Automatisk bakgrundssynk var 60:e sekund
+  // Automatisk bakgrundskoll var 45:e sekund
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
-    const interval = setInterval(() => fetchFromCloud(), 60000);
+    const interval = setInterval(() => fetchFromCloud(), 45000);
     return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
 
@@ -231,17 +232,17 @@ const App: React.FC = () => {
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim().toLowerCase();
-    if (!cleanId) return alert("Vänligen ange ett namn för Hubben.");
+    if (!cleanId || cleanId.length < 2) return alert("Vänligen välj ett namn på minst 2 tecken.");
     
-    if (window.confirm(`Vill du skapa Hubben "${cleanId}" i molnet? Din nuvarande lokala data kommer att laddas upp.`)) {
+    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? All din nuvarande data kommer laddas upp.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId };
       const res = await pushToCloud(users, sessions, newSettings, cleanId);
       
       if (res.success) {
         setAppSettings(newSettings);
-        alert(`Klart! Hubben "${cleanId}" är nu aktiv i molnet.`);
+        alert(`Klart! Hubben "${cleanId}" är nu aktiv.`);
       } else {
-        alert(`Kunde inte skapa Hubben: ${res.error}`);
+        alert(`Kunde inte skapa: ${res.error}`);
       }
     }
   };
@@ -254,7 +255,7 @@ const App: React.FC = () => {
       : [...sessions, { userId: activeUserId, date: dateStr }];
     
     setSessions(newSessions);
-    // Skicka till molnet direkt vid ändring om vi är kopplade
+    // Skicka till molnet direkt vid ändring
     if (appSettings.cloudId) pushToCloud(users, newSessions, appSettings);
   };
 
@@ -443,7 +444,7 @@ const App: React.FC = () => {
                     <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (Ditt unika namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ladda" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. laddplatsen" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
                         {appSettings.cloudId && (
                           <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
                             {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
