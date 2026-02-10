@@ -31,15 +31,22 @@ import {
   Check,
   AlertCircle,
   Database,
-  UploadCloud
+  UploadCloud,
+  Server
 } from 'lucide-react';
 
 function getStartOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1);
 }
 
+// Utökad typ för inställningar med stöd för egen server
+interface ExtendedSettings extends AppSettings {
+  customServerUrl?: string;
+  lastSyncTs?: number;
+}
+
 const App: React.FC = () => {
-  // --- Grundläggande States ---
+  // --- States ---
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('laddahar_users');
     return saved ? JSON.parse(saved) : INITIAL_USERS;
@@ -50,9 +57,9 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [appSettings, setAppSettings] = useState<AppSettings>(() => {
+  const [appSettings, setAppSettings] = useState<ExtendedSettings>(() => {
     const saved = localStorage.getItem('laddahar_settings');
-    const defaults = { ...SETTINGS, cloudId: '' };
+    const defaults = { ...SETTINGS, cloudId: '', customServerUrl: '', lastSyncTs: 0 };
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
@@ -65,10 +72,10 @@ const App: React.FC = () => {
   const [cloudStatus, setCloudStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
   const [copiedId, setCopiedId] = useState(false);
   
-  // Ref för att förhindra race-conditions vid sparning
-  const blockFetchUntil = useRef(0);
+  // Ref för att förhindra att vi läser in gammal data precis efter en push
+  const syncLockRef = useRef(false);
 
-  // Spara lokalt vid varje ändring
+  // Spara lokalt
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
@@ -78,37 +85,44 @@ const App: React.FC = () => {
   // --- Temp States för Settings ---
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
+  const [tempServerUrl, setTempServerUrl] = useState(appSettings.customServerUrl || '');
 
   useEffect(() => {
     if (showSettings) {
       setTempKwhPrice(appSettings.kwhPrice.toString());
       setTempCloudId(appSettings.cloudId || '');
+      setTempServerUrl(appSettings.customServerUrl || '');
     }
-  }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
+  }, [showSettings, appSettings.cloudId, appSettings.kwhPrice, appSettings.customServerUrl]);
 
-  // --- Moln-logik (FÖRSTÄRKT) ---
-  const getCloudUrl = (id: string) => {
-    // Vi använder en helt ny, ren bucket för v9
+  // --- Moln-logik (FÖRSTÄRKT V10) ---
+  const getCloudUrl = (id: string, customUrl?: string) => {
+    if (customUrl && customUrl.startsWith('http')) {
+      return customUrl.endsWith('/') ? `${customUrl}${id}` : `${customUrl}/${id}`;
+    }
+    // STABIL FINAL BUCKET
     const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-    return `https://kvdb.io/LADDA_HAR_PRO_v9_A8fX9S3kR2qP/${cleanId}`;
+    return `https://kvdb.io/LADDAHAR_FINAL_V10_A8fX9S3kR2qP/${cleanId}`;
   };
 
-  const pushToCloud = async (u: User[], s: ChargingSession[], st: AppSettings, manualId?: string) => {
+  const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string) => {
     const id = (manualId || st.cloudId)?.trim();
     if (!id) return;
 
     setIsSyncing(true);
     setCloudStatus('syncing');
+    syncLockRef.current = true;
     
     try {
+      const ts = Date.now();
       const payload = { 
         users: u, 
         sessions: s, 
-        settings: { kwhPrice: st.kwhPrice },
-        ts: Date.now()
+        settings: { kwhPrice: st.kwhPrice, customServerUrl: st.customServerUrl },
+        ts: ts
       };
 
-      const response = await fetch(getCloudUrl(id), {
+      const response = await fetch(getCloudUrl(id, st.customServerUrl), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -116,22 +130,24 @@ const App: React.FC = () => {
       
       if (response.ok) {
         setCloudStatus('success');
+        setAppSettings(prev => ({ ...prev, lastSyncTs: ts }));
       } else {
-        throw new Error("Push failed");
+        throw new Error("Push misslyckades");
       }
     } catch (e) {
       console.error("Cloud Push Error:", e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setCloudStatus('idle'), 3000);
+      setTimeout(() => {
+        setCloudStatus('idle');
+        syncLockRef.current = false;
+      }, 3000);
     }
   };
 
   const fetchFromCloud = useCallback(async (manualId?: string) => {
-    // Om vi precis sparat, vänta med att hämta inkommande data (för att inte skriva över lokala ändringar)
-    if (!manualId && Date.now() < blockFetchUntil.current) return;
-
+    if (syncLockRef.current && !manualId) return;
     const id = (manualId || appSettings.cloudId)?.trim();
     if (!id) return;
     
@@ -139,7 +155,7 @@ const App: React.FC = () => {
     if (!manualId) setCloudStatus('syncing');
 
     try {
-      const response = await fetch(getCloudUrl(id), { 
+      const response = await fetch(getCloudUrl(id, appSettings.customServerUrl), { 
         headers: { 'Accept': 'application/json' },
         cache: 'no-store'
       });
@@ -147,18 +163,25 @@ const App: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         if (data && typeof data === 'object') {
-          // Uppdatera allt omedelbart vid lyckad fetch
-          if (Array.isArray(data.users)) setUsers(data.users);
-          if (Array.isArray(data.sessions)) setSessions(data.sessions);
-          if (data.settings?.kwhPrice) {
-            setAppSettings(prev => ({ 
-              ...prev, 
-              kwhPrice: data.settings.kwhPrice, 
-              cloudId: id 
-            }));
+          // Konfliktlösning: Endast uppdatera om inkommande data är nyare (ts) eller om det är en manuell koppling
+          const incomingTs = data.ts || 0;
+          if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
+            if (Array.isArray(data.users)) setUsers(data.users);
+            if (Array.isArray(data.sessions)) setSessions(data.sessions);
+            if (data.settings) {
+              setAppSettings(prev => ({ 
+                ...prev, 
+                kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
+                customServerUrl: data.settings.customServerUrl || prev.customServerUrl,
+                cloudId: id,
+                lastSyncTs: incomingTs
+              }));
+            }
+            setCloudStatus('success');
+            if (manualId) alert("Lyckades! Enheterna är nu synkade.");
+          } else {
+            setCloudStatus('idle');
           }
-          setCloudStatus('success');
-          if (manualId) alert("Lyckades! Enheterna är nu synkade.");
         }
       } else if (response.status === 404) {
         if (manualId) alert("Hittade ingen Hub med detta namn. Kontrollera stavningen eller klicka på 'Initialisera' på den enhet som har din data.");
@@ -173,13 +196,13 @@ const App: React.FC = () => {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
-  }, [appSettings.cloudId]);
+  }, [appSettings.cloudId, appSettings.lastSyncTs, appSettings.customServerUrl]);
 
-  // Automatisk bakgrundssynk
+  // Automatisk synk var 30:e sekund
   useEffect(() => {
     if (!appSettings.cloudId) return;
-    fetchFromCloud(); // Kör direkt vid start
-    const interval = setInterval(() => fetchFromCloud(), 20000);
+    fetchFromCloud(); 
+    const interval = setInterval(() => fetchFromCloud(), 30000);
     return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
 
@@ -187,11 +210,9 @@ const App: React.FC = () => {
   const handleSaveSettings = async () => {
     const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
     const newId = tempCloudId.trim();
+    const newUrl = tempServerUrl.trim();
     
-    // Blockera inkommande synk i 8 sekunder så vår push hinner "landas" på servern
-    blockFetchUntil.current = Date.now() + 8000;
-    
-    const newSettings = { ...appSettings, kwhPrice: newPrice, cloudId: newId };
+    const newSettings = { ...appSettings, kwhPrice: newPrice, cloudId: newId, customServerUrl: newUrl };
     setAppSettings(newSettings);
     
     if (newId) {
@@ -206,11 +227,10 @@ const App: React.FC = () => {
     if (!cleanId) return alert("Ange ett ID.");
     
     if (window.confirm(`Vill du skapa Hubben "${cleanId}"? All data från denna enhet laddas upp som originalkopia.`)) {
-      blockFetchUntil.current = Date.now() + 8000;
-      const newSettings = { ...appSettings, cloudId: cleanId };
+      const newSettings = { ...appSettings, cloudId: cleanId, customServerUrl: tempServerUrl.trim() };
       setAppSettings(newSettings);
       await pushToCloud(users, sessions, newSettings, cleanId);
-      alert(`Hubben "${cleanId}" är skapad! Nu kan du koppla andra enheter till den.`);
+      alert(`Hubben "${cleanId}" är nu skapad!`);
     }
   };
 
@@ -222,7 +242,6 @@ const App: React.FC = () => {
       : [...sessions, { userId: activeUserId, date: dateStr }];
     
     setSessions(newSessions);
-    // Pusha direkt vid klick
     if (appSettings.cloudId) pushToCloud(users, newSessions, appSettings);
   };
 
@@ -395,20 +414,20 @@ const App: React.FC = () => {
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xl flex items-center justify-center p-4 z-50 overflow-y-auto">
           <div className="bg-white rounded-[4.5rem] p-14 max-w-xl w-full shadow-2xl relative my-8 animate-in slide-in-from-bottom duration-400">
             <button onClick={() => setShowSettings(false)} className="absolute top-12 right-12 text-slate-300 hover:text-slate-900 transition-colors"><X size={32} /></button>
-            <div className="space-y-14">
+            <div className="space-y-12">
               <section>
-                <h2 className="text-4xl font-black mb-10 tracking-tighter flex items-center gap-5 text-emerald-600"><Zap size={40} /> Inställningar</h2>
+                <h2 className="text-4xl font-black mb-8 tracking-tighter flex items-center gap-5 text-emerald-600"><Zap size={40} /> Inställningar</h2>
                 <div className="space-y-5">
                   <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Aktuellt Elpris (SEK / kWh)</label>
                   <input type="number" step="0.01" value={tempKwhPrice} onChange={(e) => setTempKwhPrice(e.target.value)} className="w-full px-10 py-10 rounded-[3rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-black text-6xl text-emerald-600 bg-slate-50/50 transition-all shadow-inner" />
                 </div>
               </section>
 
-              <section className="pt-14 border-t border-slate-100">
-                <h2 className="text-4xl font-black mb-10 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
+              <section className="pt-10 border-t border-slate-100">
+                <h2 className="text-4xl font-black mb-8 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
                 <div className="space-y-6">
                   <div className="space-y-3">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID (Ditt unika namn)</label>
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (Ditt unika namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
                         <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ForetagetLaddar" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
@@ -425,18 +444,22 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 10).toUpperCase()); }} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
+                  <div className="space-y-3">
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Egen Server-URL (Valfritt)</label>
+                    <div className="flex gap-3 items-center bg-slate-50 rounded-[2rem] border-2 border-slate-50 focus-within:border-slate-200 px-6">
+                      <Server size={20} className="text-slate-300" />
+                      <input type="text" value={tempServerUrl} onChange={(e) => setTempServerUrl(e.target.value)} placeholder="https://din-server.se/api/sync" className="w-full py-6 outline-none font-medium bg-transparent text-sm" />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 pt-4">
+                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 10).toUpperCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
                       <Database size={18} /> Slumpa ID
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId || isSyncing} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
                       <UploadCloud size={18} /> Initialisera
                     </button>
                   </div>
-                  <p className="text-[10px] text-slate-400 text-center px-4 font-medium leading-relaxed">
-                    <b>Initialisera:</b> Gör din data till den gemensamma.<br/>
-                    <b>Koppla:</b> Hämta befintlig data från en annan enhet.
-                  </p>
                 </div>
               </section>
 
