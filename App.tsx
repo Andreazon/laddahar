@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { GoogleGenAI } from "@google/genai";
 import { INITIAL_USERS, SETTINGS, CAR_MODELS } from './constants';
 import { User, ChargingSession, AppSettings } from './types';
@@ -29,7 +29,6 @@ import {
   RefreshCw,
   Copy,
   Check,
-  AlertCircle,
   UploadCloud,
   Info,
   ShieldCheck,
@@ -44,6 +43,17 @@ interface ExtendedSettings extends AppSettings {
   lastSyncTs?: number;
   lastSyncStatus?: string;
 }
+
+// --- Supabase config ---
+const SUPABASE_URL = 'https://vjvjzhzpzqvontgprtlj.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqdmp6aHpwenF2b250Z3BydGxqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3MzE5MjUsImV4cCI6MjA4NjMwNzkyNX0.CYZzVl2N0-8nwPoB2REiv5iwTkJF-ssaGk4DT7zS758';
+
+const supabaseHeaders = {
+  'apikey': SUPABASE_KEY,
+  'Authorization': `Bearer ${SUPABASE_KEY}`,
+  'Content-Type': 'application/json',
+  'Prefer': 'return=representation'
+};
 
 const App: React.FC = () => {
   // --- States ---
@@ -92,14 +102,10 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (jsonbin.io) ---
-  const JSONBIN_KEY = '$2a$10$AVJXY6QOzKR2XJg/yeN7KOcyfSr7VCphjZe6dCIfoWnQmX.wXIMwS';
-
-  const getCloudUrl = (id: string) => `https://api.jsonbin.io/v3/b/${id}`;
-
+  // --- Moln-logik (Supabase) ---
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
-    const id = (manualId || st.cloudId)?.trim();
-    if (!id) return { success: false, error: "ID saknas" };
+    const id = (manualId || st.cloudId)?.trim().toLowerCase();
+    if (!id) return { success: false, error: "Hub-ID saknas" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -107,14 +113,16 @@ const App: React.FC = () => {
     
     try {
       const ts = Date.now();
-      const payload = { users: u, sessions: s, settings: { kwhPrice: st.kwhPrice }, ts: ts };
+      const payload = {
+        id: id,
+        data: { users: u, sessions: s, settings: { kwhPrice: st.kwhPrice } },
+        updated_at: ts
+      };
 
-      const response = await fetch(getCloudUrl(id), {
-        method: 'PUT',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-Master-Key': JSONBIN_KEY
-        },
+      // Upsert — skapar om den inte finns, uppdaterar om den finns
+      const response = await fetch(`${SUPABASE_URL}/rest/v1/hubs`, {
+        method: 'POST',
+        headers: { ...supabaseHeaders, 'Prefer': 'return=representation,resolution=merge-duplicates' },
         body: JSON.stringify(payload)
       });
       
@@ -128,7 +136,7 @@ const App: React.FC = () => {
         return { success: true };
       } else {
         const errData = await response.text();
-        throw new Error(`Kunde inte spara (${response.status})`);
+        throw new Error(`Kunde inte spara (${response.status}): ${errData}`);
       }
     } catch (e: any) {
       setCloudStatus('error');
@@ -139,40 +147,27 @@ const App: React.FC = () => {
       setTimeout(() => {
         setCloudStatus('idle');
         syncLockRef.current = false;
-      }, 3000);
+      }, 2000);
     }
   };
 
   const createNewHub = async () => {
-    if (!window.confirm("Skapa en ny Hub? Din nuvarande data laddas upp till molnet.")) return;
+    const hubName = tempCloudId.trim().toLowerCase() || Math.random().toString(36).substring(2, 10);
+    
+    if (!window.confirm(`Skapa Hub "${hubName}"? Din nuvarande data laddas upp.`)) return;
     
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
-      const ts = Date.now();
-      const payload = { users, sessions, settings: { kwhPrice: appSettings.kwhPrice }, ts };
-      const response = await fetch('https://api.jsonbin.io/v3/b', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-Master-Key': JSONBIN_KEY,
-          'X-Bin-Private': 'false'
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        const newId = result.metadata.id;
-        if (newId) {
-          const newSettings = { ...appSettings, cloudId: newId, lastSyncTs: ts, lastSyncStatus: '✓ Hub skapad!' };
-          setAppSettings(newSettings);
-          setTempCloudId(newId);
-          alert(`Hub skapad! ID: ${newId}\n\nDela detta ID med dina kollegor så att de kan ansluta.`);
-        }
+      const newSettings = { ...appSettings, cloudId: hubName };
+      const res = await pushToCloud(users, sessions, newSettings, hubName);
+      
+      if (res.success) {
+        setAppSettings(prev => ({ ...prev, cloudId: hubName, lastSyncStatus: '✓ Hub skapad!' }));
+        setTempCloudId(hubName);
+        alert(`Hub skapad! Namn: "${hubName}"\n\nDela detta namn med dina kollegor så att de kan ansluta.`);
       } else {
-        const errData = await response.text();
-        throw new Error(errData || "Serverfel");
+        throw new Error(res.error || "Okänt fel");
       }
     } catch (e: any) {
       alert("Kunde inte skapa Hub: " + e.message);
@@ -183,40 +178,48 @@ const App: React.FC = () => {
   };
 
   const fetchFromCloud = useCallback(async (manualId?: string) => {
-    const id = (manualId || appSettings.cloudId)?.trim();
+    const id = (manualId || appSettings.cloudId)?.trim().toLowerCase();
     if (!id) return;
     
     setIsSyncing(true);
     try {
-      const response = await fetch(`${getCloudUrl(id)}/latest`, { 
-        headers: { 'X-Master-Key': JSONBIN_KEY },
-        cache: 'no-store' 
-      });
+      const response = await fetch(
+        `${SUPABASE_URL}/rest/v1/hubs?id=eq.${encodeURIComponent(id)}&select=*`,
+        { headers: supabaseHeaders }
+      );
       
       if (response.ok) {
-        const result = await response.json();
-        const data = result.record;
+        const rows = await response.json();
         
-        if (data && typeof data === 'object') {
-          const incomingTs = data.ts || 0;
-          
-          if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
-            if (Array.isArray(data.users)) setUsers(data.users);
-            if (Array.isArray(data.sessions)) setSessions(data.sessions);
-            if (data.settings) {
-              setAppSettings(prev => ({ 
-                ...prev, 
-                kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
-                cloudId: id,
-                lastSyncTs: incomingTs,
-                lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
-              }));
-            }
-            if (manualId) alert("Ansluten! Data har hämtats.");
+        if (rows.length === 0) {
+          if (manualId) alert(`Hubben "${id}" finns inte ännu. Klicka "Skapa ny Hub" för att starta den.`);
+          return;
+        }
+
+        const row = rows[0];
+        const data = row.data;
+        const incomingTs = row.updated_at || 0;
+        
+        if (data && (manualId || incomingTs > (appSettings.lastSyncTs || 0))) {
+          if (Array.isArray(data.users)) setUsers(data.users);
+          if (Array.isArray(data.sessions)) setSessions(data.sessions);
+          if (data.settings) {
+            setAppSettings(prev => ({ 
+              ...prev, 
+              kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
+              cloudId: id,
+              lastSyncTs: incomingTs,
+              lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
+            }));
+          }
+          if (manualId) {
+            setTempCloudId(id);
+            alert("Ansluten! Data har hämtats.");
           }
         }
       } else {
-        if (manualId) alert("Kunde inte hitta Hubben. Kontrollera ID:t.");
+        const errText = await response.text();
+        throw new Error(errText);
       }
     } catch (e: any) {
       if (manualId) alert("Anslutningsfel: " + e.message);
@@ -225,8 +228,10 @@ const App: React.FC = () => {
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs]);
 
+  // Automatisk synk var 30:e sekund (obegränsat med Supabase)
   useEffect(() => {
     if (!appSettings.cloudId) return;
+    fetchFromCloud();
     const interval = setInterval(() => fetchFromCloud(), 30000);
     return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
@@ -432,10 +437,10 @@ const App: React.FC = () => {
                 <h2 className="text-4xl font-black mb-8 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
                 <div className="space-y-6">
                   <div className="space-y-3">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (från kollega eller skapa ny)</label>
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-namn (valfritt namn, t.ex. "kontoret")</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="Klistra in ID..." className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. kontoret, ladda123..." className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
                         {appSettings.cloudId && (
                           <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
                             {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
