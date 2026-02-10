@@ -75,7 +75,7 @@ const App: React.FC = () => {
   
   const syncLockRef = useRef(false);
 
-  // Backup lokalt
+  // Lokal backup (viktigast)
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
@@ -93,16 +93,18 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (V20 - OPEN KEY-VALUE SYNC) ---
-  // Vi använder en öppen tjänst som inte kräver konton eller UUID:n.
-  const API_BASE = "https://api.keyvalue.xyz";
-  const APP_PREFIX = "LaddaHar_"; // Prefix för att undvika krockar med andra appar
-
-  const getCleanId = (id: string) => APP_PREFIX + id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+  // --- Moln-logik (V21 - SECURE KVDB ENGINE) ---
+  // kvdb.io kräver exakt 20 tecken, endast gemener och siffror.
+  const BUCKET_ID = "laddahar2025v2bucketx"; 
+  
+  const getCloudUrl = (key: string) => {
+    const cleanKey = key.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+    return `https://kvdb.io/${BUCKET_ID}/${cleanKey}`;
+  };
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id || id.length < 2) return { success: false, error: "Namnet är för kort" };
+    if (!id) return { success: false, error: "Inget ID angivet" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -110,34 +112,36 @@ const App: React.FC = () => {
     
     try {
       const ts = Date.now();
-      const payload = JSON.stringify({ 
+      const payload = { 
         users: u, 
         sessions: s, 
         settings: { kwhPrice: st.kwhPrice },
         ts: ts
-      });
+      };
 
-      // keyvalue.xyz använder POST för att uppdatera
-      const response = await fetch(`${API_BASE}/${getCleanId(id)}`, {
+      const response = await fetch(getCloudUrl(id), {
         method: 'POST',
-        body: payload
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
       
       if (response.ok) {
         setCloudStatus('success');
+        const syncTime = new Date().toLocaleTimeString();
         setAppSettings(prev => ({ 
           ...prev, 
           lastSyncTs: ts, 
-          lastSyncStatus: `✓ Molnsparning OK ${new Date().toLocaleTimeString()}` 
+          lastSyncStatus: `✓ Molnet uppdaterat ${syncTime}` 
         }));
         return { success: true };
       } else {
-        throw new Error(`Kunde inte spara (${response.status})`);
+        const errText = await response.text();
+        throw new Error(errText || `Serverfel ${response.status}`);
       }
     } catch (e: any) {
-      console.error("Cloud Push Error:", e);
+      console.error("Cloud Error:", e);
       setCloudStatus('error');
-      setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel vid sparning` }));
+      setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel: ${e.message}` }));
       return { success: false, error: e.message };
     } finally {
       setIsSyncing(false);
@@ -151,18 +155,19 @@ const App: React.FC = () => {
   const fetchFromCloud = useCallback(async (manualId?: string) => {
     if (syncLockRef.current && !manualId) return;
     const id = (manualId || appSettings.cloudId)?.trim();
-    if (!id || id.length < 2) return;
+    if (!id) return;
     
     setIsSyncing(true);
     if (!manualId) setCloudStatus('syncing');
 
     try {
-      const response = await fetch(`${API_BASE}/${getCleanId(id)}`);
+      const response = await fetch(getCloudUrl(id), { cache: 'no-store' });
       
       if (response.ok) {
         const data = await response.json();
         if (data && typeof data === 'object') {
           const incomingTs = data.ts || 0;
+          // Synka om det är manuellt anrop eller om molnet har nyare timestamp än vår lokala kopia
           if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
             if (Array.isArray(data.users)) setUsers(data.users);
             if (Array.isArray(data.sessions)) setSessions(data.sessions);
@@ -172,36 +177,37 @@ const App: React.FC = () => {
                 kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
                 cloudId: id.toLowerCase(),
                 lastSyncTs: incomingTs,
-                lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
+                lastSyncStatus: `✓ Hämtat från molnet ${new Date().toLocaleTimeString()}`
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert(`Kopplad! Du har nu synkat med Hub "${id}".`);
+            if (manualId) alert(`Kopplad! Hubben "${id}" har synkats.`);
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
-        if (manualId) alert(`Hubben "${id}" finns inte ännu. Klicka på "Initialisera" på den första enheten för att skapa den.`);
+        // En 404 betyder bara att Hubben är tom/ny
         setCloudStatus('idle');
+        if (manualId) alert(`Hubben "${id}" är ny. Klicka på "Initialisera" för att börja dela din data härifrån.`);
       } else {
-        throw new Error("Nätverksfel");
+        throw new Error(`Kunde inte ansluta (${response.status})`);
       }
     } catch (e: any) {
       console.error("Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Kunde inte hämta Hubben. Kontrollera internetanslutningen.`);
+      if (manualId) alert(`Anslutningsfel: ${e.message}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs]);
 
-  // Bakgrundssynk var 45:e sekund
+  // Bakgrundssynk var 60:e sekund
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
-    const interval = setInterval(() => fetchFromCloud(), 45000);
+    const interval = setInterval(() => fetchFromCloud(), 60000);
     return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
 
@@ -221,17 +227,17 @@ const App: React.FC = () => {
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim().toLowerCase();
-    if (!cleanId || cleanId.length < 2) return alert("Välj ett namn på minst 2 tecken.");
+    if (!cleanId) return alert("Vänligen ange ett namn.");
     
-    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Din nuvarande data laddas upp nu.`)) {
+    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? All din lokala data kommer att laddas upp nu.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId };
       const res = await pushToCloud(users, sessions, newSettings, cleanId);
       
       if (res.success) {
         setAppSettings(newSettings);
-        alert(`Klart! Hubben "${cleanId}" är nu aktiv.`);
+        alert(`Klart! Hubben "${cleanId}" är nu redo att användas.`);
       } else {
-        alert(`Kunde inte skapa Hubben. Prova ett annat namn.`);
+        alert(`Gick inte att skapa Hubben: ${res.error}. Kontrollera internet.`);
       }
     }
   };
@@ -244,6 +250,7 @@ const App: React.FC = () => {
       : [...sessions, { userId: activeUserId, date: dateStr }];
     
     setSessions(newSessions);
+    // Skicka ändringen till molnet direkt om vi är kopplade
     if (appSettings.cloudId) pushToCloud(users, newSessions, appSettings);
   };
 
@@ -432,7 +439,7 @@ const App: React.FC = () => {
                     <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (Ditt unika namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. laddplatsen" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. laddnu" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
                         {appSettings.cloudId && (
                           <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
                             {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
@@ -447,8 +454,8 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 pt-4">
-                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 8).toUpperCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
-                      <Database size={18} /> Slumpa Namn
+                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 10).toLowerCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
+                      <Database size={18} /> Slumpa ID
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId || isSyncing} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
                       <UploadCloud size={18} /> Initialisera
