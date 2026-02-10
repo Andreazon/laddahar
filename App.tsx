@@ -39,7 +39,7 @@ function getStartOfMonth(date: Date): Date {
 }
 
 const App: React.FC = () => {
-  // --- Grundläggande States ---
+  // --- States ---
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('laddahar_users');
     return saved ? JSON.parse(saved) : INITIAL_USERS;
@@ -65,17 +65,16 @@ const App: React.FC = () => {
   const [cloudStatus, setCloudStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
   const [copiedId, setCopiedId] = useState(false);
   
-  // Ref för att förhindra race-conditions
   const blockFetchRef = useRef(false);
 
-  // Spara lokalt vid varje ändring
+  // Spara lokalt
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
     localStorage.setItem('laddahar_settings', JSON.stringify(appSettings));
   }, [users, sessions, appSettings]);
 
-  // --- Temp States för inställnings-fönstret ---
+  // --- Temp States för Settings ---
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
 
@@ -86,29 +85,24 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (Stabil Bucket) ---
+  // --- Moln-logik (STABIL BUCKET ID) ---
   const getCloudUrl = (id: string) => {
-    const safeId = encodeURIComponent(id.toLowerCase().trim().replace(/[^a-z0-9]/g, '_'));
-    // Vi använder en permanent och stabil bucket-id här
-    return `https://kvdb.io/75YvWv6Q9Z1Q4Z8Q1Q4Z8Q/laddahar_v5_${safeId}`;
+    const clean = id.toLowerCase().trim().replace(/[^a-z0-9]/g, '_');
+    // Vi använder nu en fast bucket för att undvika 404 mellan versioner
+    return `https://kvdb.io/A8fX9S3kR2qP6m5N8tWvZy/ladd_v7_${clean}`;
   };
 
-  const pushToCloud = async (
-    currentUsers: User[], 
-    currentSessions: ChargingSession[], 
-    currentSettings: AppSettings, 
-    manualId?: string
-  ) => {
-    const id = (manualId || currentSettings.cloudId)?.trim();
+  const pushToCloud = async (u: User[], s: ChargingSession[], st: AppSettings, manualId?: string) => {
+    const id = (manualId || st.cloudId)?.trim();
     if (!id) return;
 
     setIsSyncing(true);
     setCloudStatus('syncing');
     try {
       const payload = { 
-        users: currentUsers, 
-        sessions: currentSessions, 
-        settings: { kwhPrice: currentSettings.kwhPrice },
+        users: u, 
+        sessions: s, 
+        settings: { kwhPrice: st.kwhPrice },
         lastUpdated: new Date().toISOString()
       };
 
@@ -121,10 +115,10 @@ const App: React.FC = () => {
       if (response.ok) {
         setCloudStatus('success');
       } else {
-        throw new Error("Failed to push");
+        setCloudStatus('error');
       }
     } catch (e) {
-      console.error("Cloud Push Error:", e);
+      console.error("Push Error:", e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -133,9 +127,7 @@ const App: React.FC = () => {
   };
 
   const fetchFromCloud = useCallback(async (manualId?: string) => {
-    // Om vi precis sparat, blockera inkommande synk i några sekunder
     if (blockFetchRef.current && !manualId) return;
-
     const id = (manualId || appSettings.cloudId)?.trim();
     if (!id) return;
     
@@ -153,14 +145,10 @@ const App: React.FC = () => {
           if (Array.isArray(data.users)) setUsers(data.users);
           if (Array.isArray(data.sessions)) setSessions(data.sessions);
           if (data.settings?.kwhPrice) {
-            setAppSettings(prev => ({ 
-              ...prev, 
-              kwhPrice: data.settings.kwhPrice, 
-              cloudId: id 
-            }));
+            setAppSettings(prev => ({ ...prev, kwhPrice: data.settings.kwhPrice, cloudId: id }));
           }
           setCloudStatus('success');
-          if (manualId) alert("Lyckades koppla till Hubben!");
+          if (manualId) alert("Kopplad! Data har hämtats.");
         }
       } else if (response.status === 404) {
         if (manualId) alert("Hittade ingen Hub med detta namn. Klicka på 'Initialisera' för att skapa den.");
@@ -169,7 +157,6 @@ const App: React.FC = () => {
         setCloudStatus('error');
       }
     } catch (e) {
-      console.error("Cloud Fetch Error:", e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -177,11 +164,10 @@ const App: React.FC = () => {
     }
   }, [appSettings.cloudId]);
 
-  // Automatisk synk
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud();
-    const interval = setInterval(() => fetchFromCloud(), 30000);
+    const interval = setInterval(() => fetchFromCloud(), 45000);
     return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
 
@@ -190,9 +176,7 @@ const App: React.FC = () => {
     const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
     const newId = tempCloudId.trim();
     
-    // Blockera inkommande synk så vi inte skriver över våra ändringar innan uppladdningen är klar
     blockFetchRef.current = true;
-    
     const newSettings = { kwhPrice: newPrice, cloudId: newId };
     setAppSettings(newSettings);
     
@@ -201,14 +185,14 @@ const App: React.FC = () => {
     }
     
     setShowSettings(false);
-    setTimeout(() => { blockFetchRef.current = false; }, 3000);
+    setTimeout(() => { blockFetchRef.current = false; }, 4000);
   };
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim();
     if (!cleanId) return alert("Ange ett ID.");
     
-    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Din nuvarande data blir då den gemensamma versionen.`)) {
+    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Din nuvarande data laddas upp nu.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId };
       setAppSettings(newSettings);
       await pushToCloud(users, sessions, newSettings, cleanId);
@@ -227,9 +211,7 @@ const App: React.FC = () => {
     if (appSettings.cloudId) pushToCloud(users, newSessions, appSettings);
   };
 
-  // --- UI-delar ---
-  const formData = useMemo(() => ({ name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: '' }), []);
-  const [localFormData, setLocalFormData] = useState(formData);
+  const [localFormData, setLocalFormData] = useState({ name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: '' });
 
   const handleUserSubmit = (e: React.FormEvent) => {
     e.preventDefault();
