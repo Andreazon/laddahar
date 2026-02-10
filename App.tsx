@@ -150,12 +150,13 @@ const createNewHub = async () => {
     const response = await fetch('https://api.npoint.io/', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: JSON.stringify(payload) })
+      body: JSON.stringify(payload)
     });
 
     if (response.ok) {
       const result = await response.json();
-      const newId = result.id;
+      // npoint returnerar hela objektet med ett id-fält
+      const newId = result.id || window.location.href.split('/').pop();
       if (newId) {
         const newSettings = { ...appSettings, cloudId: newId, lastSyncTs: ts, lastSyncStatus: '✓ Hub skapad!' };
         setAppSettings(newSettings);
@@ -163,7 +164,8 @@ const createNewHub = async () => {
         alert(`Hub skapad! ID: ${newId}\n\nDela detta med kollegor.`);
       }
     } else {
-      throw new Error("Servern svarade inte");
+      const errText = await response.text();
+      throw new Error(errText || `Fel ${response.status}`);
     }
   } catch (e: any) {
     alert("Kunde inte skapa Hub: " + e.message);
@@ -526,6 +528,7 @@ const createNewHub = async () => {
 };
 
 export default App;
+
 
 
 
