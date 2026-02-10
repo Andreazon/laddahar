@@ -92,7 +92,8 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (JSONBlob) ---
+  // --- Moln-logik (npoint.io) ---
+  const getCloudUrl = (id: string) => `https://api.npoint.io/${id}`;
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
@@ -137,7 +138,6 @@ const App: React.FC = () => {
   };
 
   // --- Moln-logik (npoint.io) ---
-const getCloudUrl = (id: string) => `https://api.npoint.io/${id}`;
 
 const createNewHub = async () => {
   if (!window.confirm("Skapa en ny Hub? Din nuvarande data laddas upp.")) return;
@@ -526,6 +526,7 @@ const createNewHub = async () => {
 };
 
 export default App;
+
 
 
 
