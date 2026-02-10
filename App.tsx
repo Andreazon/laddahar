@@ -492,25 +492,59 @@ const App: React.FC = () => {
                     <img src={getAvatarUrl({name: localFormData.name || 'default', avatarUrl: localFormData.avatarUrl})} className="w-full h-full object-cover" alt="Preview" />
                   )}
                 </div>
-                <button type="button" onClick={async () => {
-                  if (!localFormData.name) return;
-                  setIsGeneratingImage(true);
-                  try {
-                    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-                    const r = await ai.models.generateContent({ model: 'gemini-2.5-flash-image', contents: { parts: [{ text: `3D character portrait of ${localFormData.name}, friendly face, bright studio lighting, minimalist style.` }] }, config: { imageConfig: { aspectRatio: \"1:1\" } } });
-                    const p = r.candidates?.[0]?.content.parts.find(x => x.inlineData);
-                    if (p?.inlineData) setLocalFormData(prev => ({ ...prev, avatarUrl: `data:image/png;base64,${p.inlineData?.data}` }));
-                  } catch (e) {} finally { setIsGeneratingImage(false); }
-                }} disabled={isGeneratingImage || !localFormData.name} className=\"absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50\"><Sparkles size={32} /></button>
+                {/* Corrected avatar generation button with proper syntax and Gemini SDK usage */}
+                <button 
+                  type="button" 
+                  onClick={async () => {
+                    if (!localFormData.name) return;
+                    setIsGeneratingImage(true);
+                    try {
+                      // Initialize Gemini client inside the handler
+                      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+                      const response = await ai.models.generateContent({ 
+                        model: 'gemini-2.5-flash-image', 
+                        contents: { 
+                          parts: [{ text: `3D character portrait of ${localFormData.name}, friendly face, bright studio lighting, minimalist style.` }] 
+                        }, 
+                        config: { 
+                          imageConfig: { aspectRatio: "1:1" } 
+                        } 
+                      });
+                      
+                      // Safely extract the image part from the response candidates
+                      const imagePart = response.candidates?.[0]?.content.parts.find(p => p.inlineData);
+                      if (imagePart?.inlineData) {
+                        setLocalFormData(prev => ({ 
+                          ...prev, 
+                          avatarUrl: `data:image/png;base64,${imagePart.inlineData?.data}` 
+                        }));
+                      }
+                    } catch (e) {
+                      console.error("Failed to generate image:", e);
+                    } finally { 
+                      setIsGeneratingImage(false); 
+                    }
+                  }} 
+                  disabled={isGeneratingImage || !localFormData.name} 
+                  className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"
+                >
+                  <Sparkles size={32} />
+                </button>
               </div>
             </div>
             <form onSubmit={handleUserSubmit} className="space-y-6">
               <input type="text" required value={localFormData.name} onChange={(e) => setLocalFormData({...localFormData, name: e.target.value})} className="w-full px-10 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 text-xl shadow-inner" placeholder="Namn..." />
               <div className="grid grid-cols-2 gap-5">
-                <select className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 appearance-none text-sm" value={localFormData.carModel} onChange={(e) => {
-                  const m = CAR_MODELS.find(x => x.name === e.target.value);
-                  if (m) setLocalFormData({...localFormData, carModel: m.name, capacity: m.capacity});
-                }}>{CAR_MODELS.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}</select>
+                <select 
+                  className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 appearance-none text-sm" 
+                  value={localFormData.carModel} 
+                  onChange={(e) => {
+                    const m = CAR_MODELS.find(x => x.name === e.target.value);
+                    if (m) setLocalFormData({...localFormData, carModel: m.name, capacity: m.capacity});
+                  }}
+                >
+                  {CAR_MODELS.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}
+                </select>
                 <input type="number" value={localFormData.capacity} onChange={(e) => setLocalFormData({...localFormData, capacity: parseFloat(e.target.value) || 0})} className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50" />
               </div>
               <button type="submit" className="w-full py-8 bg-slate-900 text-white font-black rounded-[2.5rem] uppercase tracking-widest text-sm mt-6 active:scale-95 transition-all shadow-xl hover:bg-slate-800">Spara Profil</button>
