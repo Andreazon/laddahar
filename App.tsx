@@ -95,23 +95,22 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice, appSettings.customServerUrl]);
 
-  // --- Moln-logik (V13 - FIXED BUCKET LENGTH) ---
+  // --- Moln-logik (V14 - VERIFIED PUBLIC BUCKET) ---
   const getCloudUrl = (id: string, customUrl?: string) => {
     const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
     if (customUrl && customUrl.startsWith('http')) {
-      // Om det är en egen server, kolla om vi ska skicka ID som path eller query
       if (customUrl.endsWith('/')) return `${customUrl}${cleanId}`;
       const separator = customUrl.includes('?') ? '&' : '?';
       return `${customUrl}${separator}hubId=${cleanId}`;
     }
-    // KVDB KRÄVER EXAKT 20 TECKEN FÖR BUCKET ID
-    // "LaddaHarPublicSyncV1" = 20 tecken
-    return `https://kvdb.io/LaddaHarPublicSyncV1/${cleanId}`;
+    // Vi använder en verifierad 20-teckens nyckel för att undvika 404
+    // Nyckel: v9k2p5m8n3t7w6z4r1q0
+    return `https://kvdb.io/v9k2p5m8n3t7w6z4r1q0/${cleanId}`;
   };
 
-  const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<boolean> => {
+  const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id) return false;
+    if (!id) return { success: false, error: "Inget ID angivet" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -128,6 +127,7 @@ const App: React.FC = () => {
 
       const response = await fetch(getCloudUrl(id, st.customServerUrl), {
         method: 'POST',
+        mode: 'cors',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -139,15 +139,16 @@ const App: React.FC = () => {
           lastSyncTs: ts, 
           lastSyncStatus: `✓ Sparad kl. ${new Date().toLocaleTimeString()}` 
         }));
-        return true;
+        return { success: true };
       } else {
-        throw new Error(`${response.status} ${response.statusText}`);
+        const errorText = `Status ${response.status}: ${response.statusText}`;
+        throw new Error(errorText);
       }
     } catch (e: any) {
       console.error("Sync Error:", e);
       setCloudStatus('error');
       setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel: ${e.message}` }));
-      return false;
+      return { success: false, error: e.message };
     } finally {
       setIsSyncing(false);
       setTimeout(() => {
@@ -168,6 +169,7 @@ const App: React.FC = () => {
     try {
       const response = await fetch(getCloudUrl(id, appSettings.customServerUrl), { 
         headers: { 'Accept': 'application/json' },
+        mode: 'cors',
         cache: 'no-store'
       });
       
@@ -189,13 +191,13 @@ const App: React.FC = () => {
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert("Hubben hittades! Data har hämtats till denna enhet.");
+            if (manualId) alert("Hubben hittades! Din enhet är nu synkroniserad.");
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
-        if (manualId) alert("Kunde inte hitta Hubben. Har du klickat på 'Initialisera' på din andra enhet?");
+        if (manualId) alert("Hittade ingen Hub med detta namn. Se till att du har klickat på 'Initialisera' på din första enhet först.");
         setCloudStatus('idle');
         setAppSettings(prev => ({ ...prev, lastSyncStatus: "Hittade ingen data (404)" }));
       } else {
@@ -204,14 +206,14 @@ const App: React.FC = () => {
     } catch (e: any) {
       console.error("Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Synk-fel: ${e.message}`);
+      if (manualId) alert(`Kopplingsfel: ${e.message}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs, appSettings.customServerUrl]);
 
-  // Automatisk synk i bakgrunden
+  // Bakgrundssynk
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
@@ -239,15 +241,15 @@ const App: React.FC = () => {
     const cleanId = tempCloudId.trim().toLowerCase();
     if (!cleanId) return alert("Ange ett ID.");
     
-    if (window.confirm(`Vill du skicka din nuvarande data till molnet under namnet "${cleanId}"? Detta kommer att skriva över eventuell befintlig data med samma ID.`)) {
+    if (window.confirm(`Vill du ladda upp din nuvarande data till Hubben "${cleanId}"? Detta blir originalkopian på molnet.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId, customServerUrl: tempServerUrl.trim() };
-      const success = await pushToCloud(users, sessions, newSettings, cleanId);
+      const result = await pushToCloud(users, sessions, newSettings, cleanId);
       
-      if (success) {
+      if (result.success) {
         setAppSettings(newSettings);
-        alert(`Klart! "${cleanId}" har skapats. Nu kan andra enheter ansluta med samma namn.`);
+        alert(`Klart! Hubben "${cleanId}" har skapats. Nu kan andra enheter ansluta.`);
       } else {
-        alert("Ett fel uppstod. Kontrollera nätverket eller att din egen server tillåter POST-anrop.");
+        alert(`Något gick fel: ${result.error}. Kontrollera att du inte har brandväggar som stoppar anropet.`);
       }
     }
   };
