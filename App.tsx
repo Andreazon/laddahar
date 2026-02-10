@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { GoogleGenAI } from "@google/genai";
 import { INITIAL_USERS, SETTINGS, CAR_MODELS } from './constants';
-import { User, ChargingSession } from './types';
+import { User, ChargingSession, AppSettings } from './types';
 import { 
   format, 
   endOfMonth, 
@@ -24,7 +24,6 @@ import {
   X,
   Sparkles,
   Loader2,
-  Info,
   Heart,
   Cloud,
   RefreshCw,
@@ -40,7 +39,7 @@ function getStartOfMonth(date: Date): Date {
 }
 
 const App: React.FC = () => {
-  // --- States ---
+  // --- Grundläggande States ---
   const [users, setUsers] = useState<User[]>(() => {
     const saved = localStorage.getItem('laddahar_users');
     return saved ? JSON.parse(saved) : INITIAL_USERS;
@@ -51,7 +50,7 @@ const App: React.FC = () => {
     return saved ? JSON.parse(saved) : [];
   });
 
-  const [appSettings, setAppSettings] = useState(() => {
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => {
     const saved = localStorage.getItem('laddahar_settings');
     const defaults = { ...SETTINGS, cloudId: '' };
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
@@ -66,41 +65,77 @@ const App: React.FC = () => {
   const [cloudStatus, setCloudStatus] = useState<'idle' | 'syncing' | 'error' | 'success'>('idle');
   const [copiedId, setCopiedId] = useState(false);
   
-  // Ref för att hålla koll på senaste datan utan att trigga om-renderingar i synk-loopar
-  const syncRef = useRef({ users, sessions, appSettings });
+  // Ref för att förhindra race-conditions
   const blockFetchRef = useRef(false);
 
+  // Spara lokalt vid varje ändring
   useEffect(() => {
-    syncRef.current = { users, sessions, appSettings };
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
     localStorage.setItem('laddahar_settings', JSON.stringify(appSettings));
   }, [users, sessions, appSettings]);
 
-  // --- Temp States för formulär ---
-  const [formData, setFormData] = useState({ 
-    name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: ''
-  });
+  // --- Temp States för inställnings-fönstret ---
   const [tempKwhPrice, setTempKwhPrice] = useState(appSettings.kwhPrice.toString());
   const [tempCloudId, setTempCloudId] = useState(appSettings.cloudId || '');
 
-  // När vi öppnar inställningar, se till att temp-värdena stämmer med verkligheten
   useEffect(() => {
     if (showSettings) {
       setTempKwhPrice(appSettings.kwhPrice.toString());
       setTempCloudId(appSettings.cloudId || '');
     }
-  }, [showSettings, appSettings]);
+  }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Cloud Logic ---
+  // --- Moln-logik (Stabil Bucket) ---
   const getCloudUrl = (id: string) => {
-    // Vi använder en helt ny, garanterat unik bucket-prefix
     const safeId = encodeURIComponent(id.toLowerCase().trim().replace(/[^a-z0-9]/g, '_'));
-    return `https://kvdb.io/MN8tWvZyA8fX9S3kR2qP6m/laddv4_${safeId}`;
+    // Vi använder en permanent och stabil bucket-id här
+    return `https://kvdb.io/75YvWv6Q9Z1Q4Z8Q1Q4Z8Q/laddahar_v5_${safeId}`;
+  };
+
+  const pushToCloud = async (
+    currentUsers: User[], 
+    currentSessions: ChargingSession[], 
+    currentSettings: AppSettings, 
+    manualId?: string
+  ) => {
+    const id = (manualId || currentSettings.cloudId)?.trim();
+    if (!id) return;
+
+    setIsSyncing(true);
+    setCloudStatus('syncing');
+    try {
+      const payload = { 
+        users: currentUsers, 
+        sessions: currentSessions, 
+        settings: { kwhPrice: currentSettings.kwhPrice },
+        lastUpdated: new Date().toISOString()
+      };
+
+      const response = await fetch(getCloudUrl(id), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      if (response.ok) {
+        setCloudStatus('success');
+      } else {
+        throw new Error("Failed to push");
+      }
+    } catch (e) {
+      console.error("Cloud Push Error:", e);
+      setCloudStatus('error');
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setCloudStatus('idle'), 2000);
+    }
   };
 
   const fetchFromCloud = useCallback(async (manualId?: string) => {
+    // Om vi precis sparat, blockera inkommande synk i några sekunder
     if (blockFetchRef.current && !manualId) return;
+
     const id = (manualId || appSettings.cloudId)?.trim();
     if (!id) return;
     
@@ -115,7 +150,6 @@ const App: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         if (data && typeof data === 'object') {
-          // Uppdatera endast om det faktiskt finns data
           if (Array.isArray(data.users)) setUsers(data.users);
           if (Array.isArray(data.sessions)) setSessions(data.sessions);
           if (data.settings?.kwhPrice) {
@@ -126,15 +160,16 @@ const App: React.FC = () => {
             }));
           }
           setCloudStatus('success');
+          if (manualId) alert("Lyckades koppla till Hubben!");
         }
       } else if (response.status === 404) {
-        if (manualId) alert("Hittade ingen sparad data för detta ID. Du kan skapa en ny hub genom att klicka på 'Initialisera'.");
+        if (manualId) alert("Hittade ingen Hub med detta namn. Klicka på 'Initialisera' för att skapa den.");
         setCloudStatus('idle');
       } else {
         setCloudStatus('error');
       }
     } catch (e) {
-      console.error("Fetch error:", e);
+      console.error("Cloud Fetch Error:", e);
       setCloudStatus('error');
     } finally {
       setIsSyncing(false);
@@ -142,84 +177,42 @@ const App: React.FC = () => {
     }
   }, [appSettings.cloudId]);
 
-  const pushToCloud = async (overrideSessions?: ChargingSession[], overrideUsers?: User[], manualId?: string) => {
-    const id = (manualId || appSettings.cloudId)?.trim();
-    if (!id) return;
-
-    setIsSyncing(true);
-    setCloudStatus('syncing');
-    try {
-      const payload = { 
-        users: overrideUsers || syncRef.current.users, 
-        sessions: overrideSessions || syncRef.current.sessions, 
-        settings: { kwhPrice: syncRef.current.appSettings.kwhPrice },
-        lastUpdated: new Date().toISOString()
-      };
-
-      const response = await fetch(getCloudUrl(id), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      
-      if (response.ok) {
-        setCloudStatus('success');
-      } else {
-        setCloudStatus('error');
-      }
-    } catch (e) {
-      console.error("Push error:", e);
-      setCloudStatus('error');
-    } finally {
-      setIsSyncing(false);
-      setTimeout(() => setCloudStatus('idle'), 2000);
-    }
-  };
-
-  // Bakgrundssynk
+  // Automatisk synk
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud();
-    const timer = setInterval(() => fetchFromCloud(), 60000); // Kolla en gång i minuten
-    return () => clearInterval(timer);
+    const interval = setInterval(() => fetchFromCloud(), 30000);
+    return () => clearInterval(interval);
   }, [appSettings.cloudId, fetchFromCloud]);
 
   // --- Handlers ---
-  const handleSaveSettings = () => {
+  const handleSaveSettings = async () => {
     const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
     const newId = tempCloudId.trim();
     
-    // 1. Blockera inkommande synk ett tag så vi inte skriver över våra ändringar
+    // Blockera inkommande synk så vi inte skriver över våra ändringar innan uppladdningen är klar
     blockFetchRef.current = true;
     
     const newSettings = { kwhPrice: newPrice, cloudId: newId };
-    
-    // 2. Spara i minnet och på disken direkt
     setAppSettings(newSettings);
-    localStorage.setItem('laddahar_settings', JSON.stringify(newSettings));
     
-    // 3. Om vi har ett ID, tryck upp nuvarande data direkt
     if (newId) {
-      pushToCloud(sessions, users, newId);
+      await pushToCloud(users, sessions, newSettings, newId);
     }
     
     setShowSettings(false);
-    
-    // Häv blockering efter 5 sekunder
-    setTimeout(() => { blockFetchRef.current = false; }, 5000);
+    setTimeout(() => { blockFetchRef.current = false; }, 3000);
   };
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim();
-    if (!cleanId || cleanId.length < 2) {
-      alert("Ange ett ID.");
-      return;
-    }
+    if (!cleanId) return alert("Ange ett ID.");
     
-    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Denna enhets data kommer att bli huvudkopian på molnet.`)) {
-      await pushToCloud(sessions, users, cleanId);
-      setAppSettings(prev => ({ ...prev, cloudId: cleanId }));
-      alert(`Hubben "${cleanId}" är nu redo!`);
+    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Din nuvarande data blir då den gemensamma versionen.`)) {
+      const newSettings = { ...appSettings, cloudId: cleanId };
+      setAppSettings(newSettings);
+      await pushToCloud(users, sessions, newSettings, cleanId);
+      alert(`Hubben "${cleanId}" är nu skapad!`);
     }
   };
 
@@ -231,22 +224,26 @@ const App: React.FC = () => {
       : [...sessions, { userId: activeUserId, date: dateStr }];
     
     setSessions(newSessions);
-    if (appSettings.cloudId) pushToCloud(newSessions);
+    if (appSettings.cloudId) pushToCloud(users, newSessions, appSettings);
   };
+
+  // --- UI-delar ---
+  const formData = useMemo(() => ({ name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: '' }), []);
+  const [localFormData, setLocalFormData] = useState(formData);
 
   const handleUserSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     let newUsers = [...users];
     if (userModal.mode === 'edit' && userModal.userId) {
-      newUsers = users.map(u => u.id === userModal.userId ? { ...u, name: formData.name, car: { model: formData.carModel, batteryCapacity: formData.capacity }, avatarUrl: formData.avatarUrl } : u);
+      newUsers = users.map(u => u.id === userModal.userId ? { ...u, name: localFormData.name, car: { model: localFormData.carModel, batteryCapacity: localFormData.capacity }, avatarUrl: localFormData.avatarUrl } : u);
     } else {
-      const newUser = { id: Date.now().toString(), name: formData.name, car: { model: formData.carModel, batteryCapacity: formData.capacity }, avatarUrl: formData.avatarUrl };
+      const newUser = { id: Date.now().toString(), name: localFormData.name, car: { model: localFormData.carModel, batteryCapacity: localFormData.capacity }, avatarUrl: localFormData.avatarUrl };
       newUsers.push(newUser);
       setActiveUserId(newUser.id);
     }
     setUsers(newUsers);
     setUserModal({ show: false, mode: 'add' });
-    if (appSettings.cloudId) pushToCloud(sessions, newUsers);
+    if (appSettings.cloudId) pushToCloud(newUsers, sessions, appSettings);
   };
 
   const deleteUser = (userId: string, e: React.MouseEvent) => {
@@ -257,43 +254,11 @@ const App: React.FC = () => {
       setUsers(newUsers);
       setSessions(newSessions);
       if (activeUserId === userId) setActiveUserId(null);
-      if (appSettings.cloudId) pushToCloud(newSessions, newUsers);
+      if (appSettings.cloudId) pushToCloud(newUsers, newSessions, appSettings);
     }
   };
 
-  const openUserModal = (mode: 'add' | 'edit', user?: User) => {
-    if (mode === 'edit' && user) {
-      setFormData({ name: user.name, carModel: user.car.model, capacity: user.car.batteryCapacity, avatarUrl: user.avatarUrl || '' });
-      setUserModal({ show: true, mode: 'edit', userId: user.id });
-    } else {
-      setFormData({ name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: '' });
-      setUserModal({ show: true, mode: 'add' });
-    }
-  };
-
-  const generateAIAvatar = async () => {
-    if (!formData.name) return;
-    setIsGeneratingImage(true);
-    try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      const prompt = `A professional 3D animated character portrait of ${formData.name}, friendly face, bright studio lighting, minimalist style, 8k.`;
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
-        contents: { parts: [{ text: prompt }] },
-        config: { imageConfig: { aspectRatio: "1:1" } }
-      });
-      if (response.candidates?.[0]?.content.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.inlineData) {
-            setFormData(prev => ({ ...prev, avatarUrl: `data:image/png;base64,${part.inlineData?.data}` }));
-            break;
-          }
-        }
-      }
-    } catch (e) { console.error(e); } finally { setIsGeneratingImage(false); }
-  };
-
-  const getAvatarUrl = (user: User | {name: string, avatarUrl?: string}) => {
+  const getAvatarUrl = (user: {name: string, avatarUrl?: string}) => {
     if (user.avatarUrl) return user.avatarUrl;
     return `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(user.name)}&backgroundColor=b6e3f4,c0aede,d1d4f9&radius=50`;
   };
@@ -349,12 +314,12 @@ const App: React.FC = () => {
                     </div>
                   </button>
                   <div className="absolute top-6 right-6 flex gap-2 opacity-0 group-hover:opacity-100 transition-all translate-x-3 group-hover:translate-x-0">
-                    <button onClick={() => openUserModal('edit', u)} className="p-3 bg-white/95 backdrop-blur rounded-2xl text-slate-400 hover:text-blue-500 shadow-xl border border-slate-100"><Edit2 size={18} /></button>
+                    <button onClick={() => { setLocalFormData({ name: u.name, carModel: u.car.model, capacity: u.car.batteryCapacity, avatarUrl: u.avatarUrl || '' }); setUserModal({ show: true, mode: 'edit', userId: u.id }); }} className="p-3 bg-white/95 backdrop-blur rounded-2xl text-slate-400 hover:text-blue-500 shadow-xl border border-slate-100"><Edit2 size={18} /></button>
                     <button onClick={(e) => deleteUser(u.id, e)} className="p-3 bg-white/95 backdrop-blur rounded-2xl text-slate-400 hover:text-red-500 shadow-xl border border-slate-100"><Trash2 size={18} /></button>
                   </div>
                 </div>
               ))}
-              <button onClick={() => openUserModal('add')} className="bg-white/50 border-2 border-dashed border-slate-200 p-10 rounded-[4rem] flex flex-col items-center justify-center gap-5 text-slate-300 hover:border-emerald-300 hover:text-emerald-500 hover:bg-emerald-50 transition-all group min-h-[300px]">
+              <button onClick={() => { setLocalFormData({ name: '', carModel: CAR_MODELS[0].name, capacity: CAR_MODELS[0].capacity, avatarUrl: '' }); setUserModal({ show: true, mode: 'add' }); }} className="bg-white/50 border-2 border-dashed border-slate-200 p-10 rounded-[4rem] flex flex-col items-center justify-center gap-5 text-slate-300 hover:border-emerald-300 hover:text-emerald-500 hover:bg-emerald-50 transition-all group min-h-[300px]">
                 <div className="w-24 h-24 rounded-full border-2 border-dashed border-current flex items-center justify-center group-hover:scale-110 transition-transform"><Plus size={44} /></div>
                 <span className="font-black text-xs uppercase tracking-[0.2em]">Lägg till Profil</span>
               </button>
@@ -444,10 +409,9 @@ const App: React.FC = () => {
 
               <section className="pt-14 border-t border-slate-100">
                 <h2 className="text-4xl font-black mb-10 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
-                <p className="text-base text-slate-500 mb-10 leading-relaxed font-medium">Ange ett namn för din Hub (t.ex. "ForetagetLaddar") och klicka på Initialisera.</p>
                 <div className="space-y-6">
                   <div className="space-y-3">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID (Valfritt namn)</label>
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Delat Hub-ID (Ditt unika namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
                         <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ForetagetLaddar" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
@@ -462,10 +426,7 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
-                    <button onClick={() => {
-                      const randomId = Math.random().toString(36).substring(2, 10).toUpperCase();
-                      setTempCloudId(randomId);
-                    }} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
+                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 10).toUpperCase()); }} className="py-7 bg-slate-50 text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
                       <Database size={18} /> Slumpa ID
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
@@ -490,25 +451,29 @@ const App: React.FC = () => {
               <div className="relative group">
                 <div className="w-44 h-44 bg-slate-50 rounded-full overflow-hidden border-4 border-slate-50 shadow-inner flex items-center justify-center relative">
                   {isGeneratingImage ? <Loader2 className="animate-spin text-emerald-500" size={64} /> : (
-                    <img 
-                      src={getAvatarUrl({name: formData.name || 'default', avatarUrl: formData.avatarUrl})} 
-                      className="w-full h-full object-cover" 
-                      alt="Preview" 
-                      key={`${formData.name}-${formData.avatarUrl}`}
-                    />
+                    <img src={getAvatarUrl({name: localFormData.name || 'default', avatarUrl: localFormData.avatarUrl})} className="w-full h-full object-cover" alt="Preview" />
                   )}
                 </div>
-                <button type="button" onClick={generateAIAvatar} disabled={isGeneratingImage || !formData.name} className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"><Sparkles size={32} /></button>
+                <button type="button" onClick={async () => {
+                  if (!localFormData.name) return;
+                  setIsGeneratingImage(true);
+                  try {
+                    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+                    const r = await ai.models.generateContent({ model: 'gemini-2.5-flash-image', contents: { parts: [{ text: `3D character portrait of ${localFormData.name}, friendly face, bright studio lighting, minimalist style.` }] }, config: { imageConfig: { aspectRatio: "1:1" } } });
+                    const p = r.candidates?.[0]?.content.parts.find(x => x.inlineData);
+                    if (p?.inlineData) setLocalFormData(prev => ({ ...prev, avatarUrl: `data:image/png;base64,${p.inlineData?.data}` }));
+                  } catch (e) {} finally { setIsGeneratingImage(false); }
+                }} disabled={isGeneratingImage || !localFormData.name} className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"><Sparkles size={32} /></button>
               </div>
             </div>
             <form onSubmit={handleUserSubmit} className="space-y-6">
-              <input type="text" required value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} className="w-full px-10 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 text-xl transition-all shadow-inner" placeholder="Namn..." />
+              <input type="text" required value={localFormData.name} onChange={(e) => setLocalFormData({...localFormData, name: e.target.value})} className="w-full px-10 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 text-xl shadow-inner" placeholder="Namn..." />
               <div className="grid grid-cols-2 gap-5">
-                <select className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 appearance-none text-sm" value={formData.carModel} onChange={(e) => {
-                  const model = CAR_MODELS.find(m => m.name === e.target.value);
-                  if (model) setFormData({...formData, carModel: model.name, capacity: model.capacity});
+                <select className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50 appearance-none text-sm" value={localFormData.carModel} onChange={(e) => {
+                  const m = CAR_MODELS.find(x => x.name === e.target.value);
+                  if (m) setLocalFormData({...localFormData, carModel: m.name, capacity: m.capacity});
                 }}>{CAR_MODELS.map(m => <option key={m.name} value={m.name}>{m.name}</option>)}</select>
-                <input type="number" value={formData.capacity} onChange={(e) => setFormData({...formData, capacity: parseFloat(e.target.value) || 0})} className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50" />
+                <input type="number" value={localFormData.capacity} onChange={(e) => setLocalFormData({...localFormData, capacity: parseFloat(e.target.value) || 0})} className="w-full px-8 py-7 rounded-[2.5rem] border-2 border-slate-50 focus:border-emerald-500 outline-none font-bold bg-slate-50/50" />
               </div>
               <button type="submit" className="w-full py-8 bg-slate-900 text-white font-black rounded-[2.5rem] uppercase tracking-widest text-sm mt-6 active:scale-95 transition-all shadow-xl hover:bg-slate-800">Spara Profil</button>
             </form>
