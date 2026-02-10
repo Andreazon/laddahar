@@ -92,8 +92,10 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (npoint.io) ---
-  const getCloudUrl = (id: string) => `https://api.npoint.io/${id}`;
+  // --- Moln-logik (jsonbin.io) ---
+  const JSONBIN_KEY = '$2a$10$AVJXY6QOzKR2XJg/yeN7KOcyfSr7VCphjZe6dCIfoWnQmX.wXIMwS';
+
+  const getCloudUrl = (id: string) => `https://api.jsonbin.io/v3/b/${id}`;
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
@@ -108,8 +110,11 @@ const App: React.FC = () => {
       const payload = { users: u, sessions: s, settings: { kwhPrice: st.kwhPrice }, ts: ts };
 
       const response = await fetch(getCloudUrl(id), {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        method: 'PUT',
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Master-Key': JSONBIN_KEY
+        },
         body: JSON.stringify(payload)
       });
       
@@ -122,6 +127,7 @@ const App: React.FC = () => {
         }));
         return { success: true };
       } else {
+        const errData = await response.text();
         throw new Error(`Kunde inte spara (${response.status})`);
       }
     } catch (e: any) {
@@ -137,67 +143,77 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Moln-logik (npoint.io) ---
+  const createNewHub = async () => {
+    if (!window.confirm("Skapa en ny Hub? Din nuvarande data laddas upp till molnet.")) return;
+    
+    setIsSyncing(true);
+    setCloudStatus('syncing');
+    try {
+      const ts = Date.now();
+      const payload = { users, sessions, settings: { kwhPrice: appSettings.kwhPrice }, ts };
+      const response = await fetch('https://api.jsonbin.io/v3/b', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Master-Key': JSONBIN_KEY,
+          'X-Bin-Private': 'false'
+        },
+        body: JSON.stringify(payload)
+      });
 
-const createNewHub = async () => {
-  if (!window.confirm("Skapa en ny Hub? Din nuvarande data laddas upp.")) return;
-  
-  setIsSyncing(true);
-  setCloudStatus('syncing');
-  try {
-    const ts = Date.now();
-    const payload = { users, sessions, settings: { kwhPrice: appSettings.kwhPrice }, ts };
-    const response = await fetch('https://api.npoint.io/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-
-    if (response.ok) {
-      const result = await response.json();
-      // npoint returnerar hela objektet med ett id-fält
-      const newId = result.id || window.location.href.split('/').pop();
-      if (newId) {
-        const newSettings = { ...appSettings, cloudId: newId, lastSyncTs: ts, lastSyncStatus: '✓ Hub skapad!' };
-        setAppSettings(newSettings);
-        setTempCloudId(newId);
-        alert(`Hub skapad! ID: ${newId}\n\nDela detta med kollegor.`);
+      if (response.ok) {
+        const result = await response.json();
+        const newId = result.metadata.id;
+        if (newId) {
+          const newSettings = { ...appSettings, cloudId: newId, lastSyncTs: ts, lastSyncStatus: '✓ Hub skapad!' };
+          setAppSettings(newSettings);
+          setTempCloudId(newId);
+          alert(`Hub skapad! ID: ${newId}\n\nDela detta ID med dina kollegor så att de kan ansluta.`);
+        }
+      } else {
+        const errData = await response.text();
+        throw new Error(errData || "Serverfel");
       }
-    } else {
-      const errText = await response.text();
-      throw new Error(errText || `Fel ${response.status}`);
+    } catch (e: any) {
+      alert("Kunde inte skapa Hub: " + e.message);
+    } finally {
+      setIsSyncing(false);
+      setCloudStatus('idle');
     }
-  } catch (e: any) {
-    alert("Kunde inte skapa Hub: " + e.message);
-  } finally {
-    setIsSyncing(false);
-    setCloudStatus('idle');
-  }
-};
+  };
+
   const fetchFromCloud = useCallback(async (manualId?: string) => {
     const id = (manualId || appSettings.cloudId)?.trim();
     if (!id) return;
     
     setIsSyncing(true);
     try {
-      const response = await fetch(getCloudUrl(id), { cache: 'no-store' });
+      const response = await fetch(`${getCloudUrl(id)}/latest`, { 
+        headers: { 'X-Master-Key': JSONBIN_KEY },
+        cache: 'no-store' 
+      });
+      
       if (response.ok) {
-        const data = await response.json();
-        const incomingTs = data.ts || 0;
+        const result = await response.json();
+        const data = result.record;
         
-        if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
-          if (Array.isArray(data.users)) setUsers(data.users);
-          if (Array.isArray(data.sessions)) setSessions(data.sessions);
-          if (data.settings) {
-            setAppSettings(prev => ({ 
-              ...prev, 
-              kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
-              cloudId: id,
-              lastSyncTs: incomingTs,
-              lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
-            }));
+        if (data && typeof data === 'object') {
+          const incomingTs = data.ts || 0;
+          
+          if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
+            if (Array.isArray(data.users)) setUsers(data.users);
+            if (Array.isArray(data.sessions)) setSessions(data.sessions);
+            if (data.settings) {
+              setAppSettings(prev => ({ 
+                ...prev, 
+                kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
+                cloudId: id,
+                lastSyncTs: incomingTs,
+                lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
+              }));
+            }
+            if (manualId) alert("Ansluten! Data har hämtats.");
           }
-          if (manualId) alert("Ansluten! Data har hämtats.");
         }
       } else {
         if (manualId) alert("Kunde inte hitta Hubben. Kontrollera ID:t.");
@@ -416,7 +432,7 @@ const createNewHub = async () => {
                 <h2 className="text-4xl font-black mb-8 tracking-tighter flex items-center gap-5 text-blue-500"><Cloud size={40} /> Molnsynk</h2>
                 <div className="space-y-6">
                   <div className="space-y-3">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (Numeriskt ID från kollega)</label>
+                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (från kollega eller skapa ny)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
                         <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="Klistra in ID..." className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
@@ -528,10 +544,3 @@ const createNewHub = async () => {
 };
 
 export default App;
-
-
-
-
-
-
-
