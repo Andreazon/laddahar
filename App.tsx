@@ -137,42 +137,42 @@ const App: React.FC = () => {
     }
   };
 
-  const createNewHub = async () => {
-    if (!window.confirm("Detta skapar en helt ny Hub i molnet. Din nuvarande data blir startpunkten. Fortsätt?")) return;
-    
-    setIsSyncing(true);
-    setCloudStatus('syncing');
-    try {
-      const ts = Date.now();
-      const payload = { users, sessions, settings: { kwhPrice: appSettings.kwhPrice }, ts };
-      const response = await fetch('https://jsonblob.com/api/jsonBlob', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+  // --- Moln-logik (npoint.io) ---
+const getCloudUrl = (id: string) => `https://api.npoint.io/${id}`;
 
-      if (response.ok) {
-        // ID:t finns i Location-headern eller x-jsonblob-headern
-        const location = response.headers.get('Location');
-        const newId = location ? location.split('/').pop() : response.headers.get('x-jsonblob');
-        
-        if (newId) {
-          const newSettings = { ...appSettings, cloudId: newId, lastSyncTs: ts, lastSyncStatus: '✓ Hub skapad!' };
-          setAppSettings(newSettings);
-          setTempCloudId(newId);
-          alert(`Hub skapad! Ditt ID är: ${newId}\n\nDela detta ID med dina kollegor så att de kan ansluta.`);
-        }
-      } else {
-        throw new Error("Servern svarade inte");
+const createNewHub = async () => {
+  if (!window.confirm("Skapa en ny Hub? Din nuvarande data laddas upp.")) return;
+  
+  setIsSyncing(true);
+  setCloudStatus('syncing');
+  try {
+    const ts = Date.now();
+    const payload = { users, sessions, settings: { kwhPrice: appSettings.kwhPrice }, ts };
+    const response = await fetch('https://api.npoint.io/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: JSON.stringify(payload) })
+    });
+
+    if (response.ok) {
+      const result = await response.json();
+      const newId = result.id;
+      if (newId) {
+        const newSettings = { ...appSettings, cloudId: newId, lastSyncTs: ts, lastSyncStatus: '✓ Hub skapad!' };
+        setAppSettings(newSettings);
+        setTempCloudId(newId);
+        alert(`Hub skapad! ID: ${newId}\n\nDela detta med kollegor.`);
       }
-    } catch (e: any) {
-      alert("Kunde inte skapa Hub: " + e.message);
-    } finally {
-      setIsSyncing(false);
-      setCloudStatus('idle');
+    } else {
+      throw new Error("Servern svarade inte");
     }
-  };
-
+  } catch (e: any) {
+    alert("Kunde inte skapa Hub: " + e.message);
+  } finally {
+    setIsSyncing(false);
+    setCloudStatus('idle');
+  }
+};
   const fetchFromCloud = useCallback(async (manualId?: string) => {
     const id = (manualId || appSettings.cloudId)?.trim();
     if (!id) return;
@@ -527,3 +527,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+
