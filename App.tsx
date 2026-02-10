@@ -96,17 +96,9 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice, appSettings.customServerUrl]);
 
-  // --- Moln-logik (V16 - PUT METHOD FIXED) ---
-  const getCloudUrl = (id: string, customUrl?: string) => {
-    const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (customUrl && customUrl.startsWith('http')) {
-      const separator = customUrl.includes('?') ? '&' : '?';
-      return `${customUrl}${separator}hubId=${cleanId}`;
-    }
-    // Vi använder PUT mot en specifik bucket-nyckel (20 tecken)
-    // Nyckel: p7k9m2v5n8r3w1z4q0j6
-    return `https://kvdb.io/p7k9m2v5n8r3w1z4q0j6/${cleanId}`;
-  };
+  // --- Moln-logik (V17 - STABLE KEY-VALUE STORE) ---
+  const API_BASE = "https://keyvalue.immanuel.co/api/KeyVal";
+  const APP_ID = "LaddaHar_V17"; // Unik app-prefix för att undvika krockar
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
@@ -125,11 +117,9 @@ const App: React.FC = () => {
         ts: ts
       };
 
-      // KVDB KRÄVER PUT FÖR ATT SPARA/UPPDATERA
-      const response = await fetch(getCloudUrl(id, st.customServerUrl), {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+      // Vi skickar datan som en sträng till KeyVal-tjänsten
+      const response = await fetch(`${API_BASE}/UpdateValue/${APP_ID}/${id}/${encodeURIComponent(JSON.stringify(payload))}`, {
+        method: 'POST'
       });
       
       if (response.ok) {
@@ -166,13 +156,17 @@ const App: React.FC = () => {
     if (!manualId) setCloudStatus('syncing');
 
     try {
-      const response = await fetch(getCloudUrl(id, appSettings.customServerUrl), { 
-        method: 'GET',
-        cache: 'no-store'
-      });
+      const response = await fetch(`${API_BASE}/GetValue/${APP_ID}/${id}`);
       
       if (response.ok) {
-        const data = await response.json();
+        const rawData = await response.json();
+        if (!rawData) {
+           if (manualId) alert("Hubben är tom eller har inte skapats än. Klicka på 'Initialisera' först.");
+           setCloudStatus('idle');
+           return;
+        }
+
+        const data = JSON.parse(rawData);
         if (data && typeof data === 'object') {
           const incomingTs = data.ts || 0;
           if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
@@ -189,17 +183,13 @@ const App: React.FC = () => {
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert("Hubben hittades! Din enhet är nu synkroniserad.");
+            if (manualId) alert("Koppling lyckades! Din enhet är nu synkroniserad.");
           } else {
             setCloudStatus('idle');
           }
         }
-      } else if (response.status === 404) {
-        if (manualId) alert("Hittade ingen Hub med det namnet. Se till att du klickat på 'Initialisera' på din första enhet först.");
-        setCloudStatus('idle');
-        setAppSettings(prev => ({ ...prev, lastSyncStatus: "Hittade ingen data (404)" }));
       } else {
-        throw new Error(`Felkod ${response.status}`);
+        throw new Error(`Kunde inte nå servern (${response.status})`);
       }
     } catch (e: any) {
       console.error("Fetch Error:", e);
@@ -244,7 +234,7 @@ const App: React.FC = () => {
       
       if (res.success) {
         setAppSettings(newSettings);
-        alert(`Klart! Hubben "${cleanId}" är nu aktiv. Nu kan andra enheter ansluta med samma namn.`);
+        alert(`Klart! Hubben "${cleanId}" är nu aktiv.`);
       } else {
         alert(`Kunde inte skapa Hubben: ${res.error}. Kontrollera din internetanslutning.`);
       }
@@ -458,14 +448,6 @@ const App: React.FC = () => {
                         {isSyncing ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />} 
                         Koppla
                       </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-3">
-                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Egen Server-URL (Valfritt)</label>
-                    <div className="flex gap-3 items-center bg-slate-50 rounded-[2rem] border-2 border-slate-50 focus-within:border-slate-200 px-6">
-                      <Server size={20} className="text-slate-300" />
-                      <input type="text" value={tempServerUrl} onChange={(e) => setTempServerUrl(e.target.value)} placeholder="https://din-server.se/api/sync" className="w-full py-6 outline-none font-medium bg-transparent text-sm" />
                     </div>
                   </div>
 
