@@ -61,7 +61,7 @@ const App: React.FC = () => {
 
   const [appSettings, setAppSettings] = useState<ExtendedSettings>(() => {
     const saved = localStorage.getItem('laddahar_settings');
-    const defaults = { ...SETTINGS, cloudId: '', customServerUrl: '', lastSyncTs: 0, lastSyncStatus: 'Ingen synk utförd' };
+    const defaults = { ...SETTINGS, cloudId: '', customServerUrl: '', lastSyncTs: 0, lastSyncStatus: 'Redo för synk' };
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
@@ -96,21 +96,20 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice, appSettings.customServerUrl]);
 
-  // --- Moln-logik (FÖRSTÄRKT V11 - GILTIG BUCKET) ---
+  // --- Moln-logik (V12 - OPTIMERAD) ---
   const getCloudUrl = (id: string, customUrl?: string) => {
     const cleanId = id.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
     if (customUrl && customUrl.startsWith('http')) {
-      // Om egen server används skickar vi ID som query-parameter
       const separator = customUrl.includes('?') ? '&' : '?';
       return `${customUrl}${separator}hubId=${cleanId}`;
     }
-    // GILTIG KVDB BUCKET ID (20 tecken, endast alfanumeriskt)
-    return `https://kvdb.io/v9k2p5m8n3t7w6z4r1q0/${cleanId}`;
+    // Vi använder en renare bucket-struktur
+    return `https://kvdb.io/LaddaHarPublicBucket1/${cleanId}`;
   };
 
-  const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string) => {
+  const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<boolean> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id) return;
+    if (!id) return false;
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -138,6 +137,7 @@ const App: React.FC = () => {
           lastSyncTs: ts, 
           lastSyncStatus: `Uppladdad kl. ${new Date().toLocaleTimeString()}` 
         }));
+        return true;
       } else {
         throw new Error(`Serverfel: ${response.status}`);
       }
@@ -145,6 +145,7 @@ const App: React.FC = () => {
       console.error("Cloud Push Error:", e);
       setCloudStatus('error');
       setAppSettings(prev => ({ ...prev, lastSyncStatus: `Fel vid uppladdning: ${e.message}` }));
+      return false;
     } finally {
       setIsSyncing(false);
       setTimeout(() => {
@@ -172,7 +173,6 @@ const App: React.FC = () => {
         const data = await response.json();
         if (data && typeof data === 'object') {
           const incomingTs = data.ts || 0;
-          // Om manuell koppling: tvinga oavsett ts. Om bakgrundssynk: kolla om nyare.
           if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
             if (Array.isArray(data.users)) setUsers(data.users);
             if (Array.isArray(data.sessions)) setSessions(data.sessions);
@@ -181,35 +181,35 @@ const App: React.FC = () => {
                 ...prev, 
                 kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
                 customServerUrl: data.settings.customServerUrl || prev.customServerUrl,
-                cloudId: id,
+                cloudId: id.toLowerCase(),
                 lastSyncTs: incomingTs,
                 lastSyncStatus: `Hämtad kl. ${new Date().toLocaleTimeString()}`
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert("Hubben hittades! Din enhet är nu synkroniserad.");
+            if (manualId) alert("Hubben hittades! Enheterna är nu i synk.");
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
-        if (manualId) alert("Hittade ingen Hub med detta namn. Se till att du har klickat på 'Initialisera' på den enhet som har din data först.");
+        if (manualId) alert("Hittade ingen data för detta ID. Du måste klicka på 'Initialisera' på en enhet som har din data först.");
         setCloudStatus('idle');
-        setAppSettings(prev => ({ ...prev, lastSyncStatus: "Hittade ingen data på molnet" }));
+        setAppSettings(prev => ({ ...prev, lastSyncStatus: "Hittade ingen data (404)" }));
       } else {
-        throw new Error(`Kunde inte hämta data (${response.status})`);
+        throw new Error(`Kunde inte ansluta (${response.status})`);
       }
     } catch (e: any) {
       console.error("Cloud Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Anslutningsfel: ${e.message}`);
+      if (manualId) alert(`Fel: ${e.message}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs, appSettings.customServerUrl]);
 
-  // Automatisk synk var 45:e sekund
+  // Bakgrundssynk
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
@@ -220,7 +220,7 @@ const App: React.FC = () => {
   // --- Handlers ---
   const handleSaveSettings = async () => {
     const newPrice = parseFloat(tempKwhPrice) || appSettings.kwhPrice;
-    const newId = tempCloudId.trim();
+    const newId = tempCloudId.trim().toLowerCase();
     const newUrl = tempServerUrl.trim();
     
     const newSettings = { ...appSettings, kwhPrice: newPrice, cloudId: newId, customServerUrl: newUrl };
@@ -234,14 +234,19 @@ const App: React.FC = () => {
   };
 
   const handleManualInitialize = async () => {
-    const cleanId = tempCloudId.trim();
+    const cleanId = tempCloudId.trim().toLowerCase();
     if (!cleanId) return alert("Ange ett ID.");
     
-    if (window.confirm(`Varning: Detta kommer att ladda upp all din lokala data till Hubben "${cleanId}". Vill du fortsätta?`)) {
+    if (window.confirm(`Vill du ladda upp din lokala data till Hubben "${cleanId}"? Detta blir originalkopian.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId, customServerUrl: tempServerUrl.trim() };
-      setAppSettings(newSettings);
-      await pushToCloud(users, sessions, newSettings, cleanId);
-      alert(`Hubben "${cleanId}" har skapats och data har laddats upp!`);
+      const success = await pushToCloud(users, sessions, newSettings, cleanId);
+      
+      if (success) {
+        setAppSettings(newSettings);
+        alert(`Klart! Hubben "${cleanId}" är nu aktiv på molnet.`);
+      } else {
+        alert("Något gick fel vid uppladdningen. Kontrollera din internetanslutning eller server-URL.");
+      }
     }
   };
 
@@ -441,7 +446,7 @@ const App: React.FC = () => {
                     <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.3em] ml-3">Hub-ID (Ditt unika namn)</label>
                     <div className="flex gap-4">
                       <div className="relative flex-1">
-                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. ForetagetLaddar" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
+                        <input type="text" value={tempCloudId} onChange={(e) => setTempCloudId(e.target.value)} placeholder="T.ex. Ladda" className="w-full px-8 py-6 rounded-[2rem] border-2 border-slate-50 focus:border-blue-400 outline-none font-bold bg-slate-50/50 text-base" />
                         {appSettings.cloudId && (
                           <button onClick={() => { navigator.clipboard.writeText(appSettings.cloudId || ''); setCopiedId(true); setTimeout(()=>setCopiedId(false),2000); }} className="absolute right-6 top-1/2 -translate-y-1/2 p-3 text-slate-400 hover:text-blue-500 transition-colors">
                             {copiedId ? <Check size={24} className="text-emerald-500" /> : <Copy size={24} />}
@@ -476,7 +481,7 @@ const App: React.FC = () => {
                     <Info size={20} className="text-blue-500 shrink-0 mt-1" />
                     <div className="space-y-1">
                       <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">Synk-logg</div>
-                      <div className="text-xs font-bold text-slate-600">{appSettings.lastSyncStatus}</div>
+                      <div className="text-xs font-bold text-slate-600 break-all">{appSettings.lastSyncStatus}</div>
                     </div>
                   </div>
                 </div>
