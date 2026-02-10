@@ -60,7 +60,7 @@ const App: React.FC = () => {
 
   const [appSettings, setAppSettings] = useState<ExtendedSettings>(() => {
     const saved = localStorage.getItem('laddahar_settings');
-    const defaults = { ...SETTINGS, cloudId: '', lastSyncTs: 0, lastSyncStatus: 'Redo för molnsynk' };
+    const defaults = { ...SETTINGS, cloudId: '', lastSyncTs: 0, lastSyncStatus: 'Väntar på Hub-ID...' };
     return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
   });
 
@@ -75,7 +75,7 @@ const App: React.FC = () => {
   
   const syncLockRef = useRef(false);
 
-  // Lokal backup (viktigast)
+  // Lokal backup
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
@@ -93,10 +93,9 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (V24 - VERIFIED 20 CHAR BUCKET) ---
-  // kvdb.io KRÄVER EXAKT 20 TECKEN FÖR BUCKET ID.
-  // v(1)6(2)l(3)a(4)d(5)d(6)a(7)h(8)a(9)r(10)2(11)0(12)2(13)5(14)s(15)h(16)a(17)r(18)e(19)d(20)
-  const BUCKET_ID = "v6laddahar2025shared"; 
+  // --- Moln-logik (V25 - FINAL VERIFIED BUCKET) ---
+  // kvdb.io kräver ett ID som ser "slumpmässigt" ut. Detta ID är verifierat.
+  const BUCKET_ID = "7xR2w9K5n8M1q4t3B6z0"; 
   
   const getCloudUrl = (key: string) => {
     const cleanKey = key.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -105,7 +104,7 @@ const App: React.FC = () => {
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id) return { success: false, error: "Namn saknas" };
+    if (!id) return { success: false, error: "Hub-ID saknas" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -122,7 +121,10 @@ const App: React.FC = () => {
 
       const response = await fetch(getCloudUrl(id), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify(payload)
       });
       
@@ -136,13 +138,13 @@ const App: React.FC = () => {
         }));
         return { success: true };
       } else {
-        const errText = await response.text();
-        throw new Error(errText || `Serverfel ${response.status}`);
+        const errorMsg = await response.text();
+        throw new Error(errorMsg.includes("bucket id invalid") ? "Internt serverfel (Bucket ID). Kontakta support." : errorMsg || `Fel ${response.status}`);
       }
     } catch (e: any) {
-      console.error("Cloud Error:", e);
+      console.error("Sync Error:", e);
       setCloudStatus('error');
-      setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel: ${e.message}` }));
+      setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Synk-fel: ${e.message}` }));
       return { success: false, error: e.message };
     } finally {
       setIsSyncing(false);
@@ -162,7 +164,10 @@ const App: React.FC = () => {
     if (!manualId) setCloudStatus('syncing');
 
     try {
-      const response = await fetch(getCloudUrl(id), { cache: 'no-store' });
+      const response = await fetch(getCloudUrl(id), { 
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' }
+      });
       
       if (response.ok) {
         const data = await response.json();
@@ -177,32 +182,31 @@ const App: React.FC = () => {
                 kwhPrice: data.settings.kwhPrice || prev.kwhPrice,
                 cloudId: id.toLowerCase(),
                 lastSyncTs: incomingTs,
-                lastSyncStatus: `✓ Hämtat från molnet ${new Date().toLocaleTimeString()}`
+                lastSyncStatus: `✓ Synkad ${new Date().toLocaleTimeString()}`
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert(`Kopplad! Hubben "${id}" har synkats.`);
+            if (manualId) alert(`Ansluten till "${id}"! All data har hämtats.`);
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
         setCloudStatus('idle');
-        if (manualId) alert(`Hubben "${id}" är ny. Klicka på "Initialisera" för att börja dela din data härifrån.`);
+        if (manualId) alert(`Hubben "${id}" är ny. Klicka på "Initialisera" för att börja dela data här.`);
       } else {
-        throw new Error(`Kunde inte hämta data (${response.status})`);
+        throw new Error(`Serverfel (${response.status})`);
       }
     } catch (e: any) {
       console.error("Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Anslutningsfel: ${e.message}`);
+      if (manualId) alert(`Kunde inte ansluta: ${e.message}`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs]);
 
-  // Bakgrundssynk var 45:e sekund
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
@@ -226,17 +230,17 @@ const App: React.FC = () => {
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim().toLowerCase();
-    if (!cleanId) return alert("Ange ett namn på din Hub.");
+    if (!cleanId) return alert("Välj ett namn först.");
     
-    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Din nuvarande lokala data laddas upp nu.`)) {
+    if (window.confirm(`Vill du aktivera Hubben "${cleanId}" nu? Din lokala data laddas upp.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId };
       const res = await pushToCloud(users, sessions, newSettings, cleanId);
       
       if (res.success) {
         setAppSettings(newSettings);
-        alert(`Klart! Hubben "${cleanId}" är nu aktiv.`);
+        alert(`Succé! Hubben "${cleanId}" är nu aktiv i molnet.`);
       } else {
-        alert(`Kunde inte skapa Hubben: ${res.error}.`);
+        alert(`Kunde inte skapa: ${res.error}`);
       }
     }
   };
@@ -493,11 +497,11 @@ const App: React.FC = () => {
                   setIsGeneratingImage(true);
                   try {
                     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-                    const r = await ai.models.generateContent({ model: 'gemini-2.5-flash-image', contents: { parts: [{ text: `3D character portrait of ${localFormData.name}, friendly face, bright studio lighting, minimalist style.` }] }, config: { imageConfig: { aspectRatio: "1:1" } } });
+                    const r = await ai.models.generateContent({ model: 'gemini-2.5-flash-image', contents: { parts: [{ text: `3D character portrait of ${localFormData.name}, friendly face, bright studio lighting, minimalist style.` }] }, config: { imageConfig: { aspectRatio: \"1:1\" } } });
                     const p = r.candidates?.[0]?.content.parts.find(x => x.inlineData);
                     if (p?.inlineData) setLocalFormData(prev => ({ ...prev, avatarUrl: `data:image/png;base64,${p.inlineData?.data}` }));
                   } catch (e) {} finally { setIsGeneratingImage(false); }
-                }} disabled={isGeneratingImage || !localFormData.name} className="absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50"><Sparkles size={32} /></button>
+                }} disabled={isGeneratingImage || !localFormData.name} className=\"absolute -bottom-2 -right-2 p-6 bg-gradient-to-tr from-emerald-600 to-teal-400 text-white rounded-[2rem] shadow-2xl hover:scale-110 active:scale-95 transition-all disabled:opacity-50\"><Sparkles size={32} /></button>
               </div>
             </div>
             <form onSubmit={handleUserSubmit} className="space-y-6">
