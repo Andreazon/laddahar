@@ -75,7 +75,7 @@ const App: React.FC = () => {
   
   const syncLockRef = useRef(false);
 
-  // Spara lokalt som backup
+  // Backup lokalt
   useEffect(() => {
     localStorage.setItem('laddahar_users', JSON.stringify(users));
     localStorage.setItem('laddahar_sessions', JSON.stringify(sessions));
@@ -93,19 +93,16 @@ const App: React.FC = () => {
     }
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
-  // --- Moln-logik (V19 - PANTRY CLOUD ENGINE) ---
-  // Pantry Cloud är extremt stabilt för Key-Value lagring.
-  const PANTRY_ID = "76288597-4c31-4821-bc7a-590f05929837"; 
-  
-  const getPantryUrl = (basketName: string) => {
-    // Rensa basket-namnet så det bara innehåller godkända tecken
-    const cleanName = basketName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
-    return `https://getpantry.cloud/apiv1/pantry/${PANTRY_ID}/basket/${cleanName}`;
-  };
+  // --- Moln-logik (V20 - OPEN KEY-VALUE SYNC) ---
+  // Vi använder en öppen tjänst som inte kräver konton eller UUID:n.
+  const API_BASE = "https://api.keyvalue.xyz";
+  const APP_PREFIX = "LaddaHar_"; // Prefix för att undvika krockar med andra appar
+
+  const getCleanId = (id: string) => APP_PREFIX + id.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
-    if (!id || id.length < 2) return { success: false, error: "ID för kort" };
+    if (!id || id.length < 2) return { success: false, error: "Namnet är för kort" };
 
     setIsSyncing(true);
     setCloudStatus('syncing');
@@ -113,19 +110,17 @@ const App: React.FC = () => {
     
     try {
       const ts = Date.now();
-      const payload = { 
+      const payload = JSON.stringify({ 
         users: u, 
         sessions: s, 
         settings: { kwhPrice: st.kwhPrice },
-        ts: ts,
-        app: "LaddaHar_V19"
-      };
+        ts: ts
+      });
 
-      // Pantry kräver POST för att skapa/överskriva en basket
-      const response = await fetch(getPantryUrl(id), {
+      // keyvalue.xyz använder POST för att uppdatera
+      const response = await fetch(`${API_BASE}/${getCleanId(id)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: payload
       });
       
       if (response.ok) {
@@ -133,17 +128,16 @@ const App: React.FC = () => {
         setAppSettings(prev => ({ 
           ...prev, 
           lastSyncTs: ts, 
-          lastSyncStatus: `✓ Sparad i molnet ${new Date().toLocaleTimeString()}` 
+          lastSyncStatus: `✓ Molnsparning OK ${new Date().toLocaleTimeString()}` 
         }));
         return { success: true };
       } else {
-        const errorData = await response.text();
-        throw new Error(`Server svarade: ${response.status} ${errorData}`);
+        throw new Error(`Kunde inte spara (${response.status})`);
       }
     } catch (e: any) {
-      console.error("Pantry Push Error:", e);
+      console.error("Cloud Push Error:", e);
       setCloudStatus('error');
-      setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel: ${e.message}` }));
+      setAppSettings(prev => ({ ...prev, lastSyncStatus: `✕ Fel vid sparning` }));
       return { success: false, error: e.message };
     } finally {
       setIsSyncing(false);
@@ -163,16 +157,12 @@ const App: React.FC = () => {
     if (!manualId) setCloudStatus('syncing');
 
     try {
-      const response = await fetch(getPantryUrl(id), { 
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-      });
+      const response = await fetch(`${API_BASE}/${getCleanId(id)}`);
       
       if (response.ok) {
         const data = await response.json();
         if (data && typeof data === 'object') {
           const incomingTs = data.ts || 0;
-          // Synka om det är manuellt anrop eller om molnet har nyare data (timestamp)
           if (manualId || incomingTs > (appSettings.lastSyncTs || 0)) {
             if (Array.isArray(data.users)) setUsers(data.users);
             if (Array.isArray(data.sessions)) setSessions(data.sessions);
@@ -186,29 +176,28 @@ const App: React.FC = () => {
               }));
             }
             setCloudStatus('success');
-            if (manualId) alert(`Kopplad till Hub "${id}"!`);
+            if (manualId) alert(`Kopplad! Du har nu synkat med Hub "${id}".`);
           } else {
             setCloudStatus('idle');
           }
         }
       } else if (response.status === 404) {
-        if (manualId) alert(`Hubben "${id}" hittades inte. Du måste klicka på 'Initialisera' först för att skapa den.`);
+        if (manualId) alert(`Hubben "${id}" finns inte ännu. Klicka på "Initialisera" på den första enheten för att skapa den.`);
         setCloudStatus('idle');
-        setAppSettings(prev => ({ ...prev, lastSyncStatus: "Ingen data i molnet (404)" }));
       } else {
-        throw new Error(`Nätverksfel (${response.status})`);
+        throw new Error("Nätverksfel");
       }
     } catch (e: any) {
-      console.error("Pantry Fetch Error:", e);
+      console.error("Fetch Error:", e);
       setCloudStatus('error');
-      if (manualId) alert(`Kunde inte hämta Hubben: ${e.message}`);
+      if (manualId) alert(`Kunde inte hämta Hubben. Kontrollera internetanslutningen.`);
     } finally {
       setIsSyncing(false);
       setTimeout(() => setCloudStatus('idle'), 3000);
     }
   }, [appSettings.cloudId, appSettings.lastSyncTs]);
 
-  // Automatisk bakgrundskoll var 45:e sekund
+  // Bakgrundssynk var 45:e sekund
   useEffect(() => {
     if (!appSettings.cloudId) return;
     fetchFromCloud(); 
@@ -232,9 +221,9 @@ const App: React.FC = () => {
 
   const handleManualInitialize = async () => {
     const cleanId = tempCloudId.trim().toLowerCase();
-    if (!cleanId || cleanId.length < 2) return alert("Vänligen välj ett namn på minst 2 tecken.");
+    if (!cleanId || cleanId.length < 2) return alert("Välj ett namn på minst 2 tecken.");
     
-    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? All din nuvarande data kommer laddas upp.`)) {
+    if (window.confirm(`Vill du skapa Hubben "${cleanId}"? Din nuvarande data laddas upp nu.`)) {
       const newSettings = { ...appSettings, cloudId: cleanId };
       const res = await pushToCloud(users, sessions, newSettings, cleanId);
       
@@ -242,7 +231,7 @@ const App: React.FC = () => {
         setAppSettings(newSettings);
         alert(`Klart! Hubben "${cleanId}" är nu aktiv.`);
       } else {
-        alert(`Kunde inte skapa: ${res.error}`);
+        alert(`Kunde inte skapa Hubben. Prova ett annat namn.`);
       }
     }
   };
@@ -255,7 +244,6 @@ const App: React.FC = () => {
       : [...sessions, { userId: activeUserId, date: dateStr }];
     
     setSessions(newSessions);
-    // Skicka till molnet direkt vid ändring
     if (appSettings.cloudId) pushToCloud(users, newSessions, appSettings);
   };
 
@@ -459,8 +447,8 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="grid grid-cols-2 gap-4 pt-4">
-                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 10).toUpperCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
-                      <Database size={18} /> Slumpa ID
+                    <button onClick={() => { setTempCloudId(Math.random().toString(36).substring(2, 8).toUpperCase()); }} className="py-7 bg-white text-slate-500 font-black rounded-[2.5rem] border-2 border-dashed border-slate-200 hover:border-emerald-300 hover:text-emerald-500 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3">
+                      <Database size={18} /> Slumpa Namn
                     </button>
                     <button onClick={handleManualInitialize} disabled={!tempCloudId || isSyncing} className="py-7 bg-emerald-50 text-emerald-600 font-black rounded-[2.5rem] border-2 border-dashed border-emerald-100 hover:border-emerald-300 hover:bg-emerald-100 transition-all text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 disabled:opacity-30">
                       <UploadCloud size={18} /> Initialisera
