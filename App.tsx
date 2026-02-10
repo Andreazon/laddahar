@@ -399,12 +399,12 @@ const App: React.FC = () => {
               </div>
 
               <div className="space-y-12">
-                <div className="bg-slate-900 text-white p-14 rounded-[4.5rem] shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[520px]">
+                <div className="bg-slate-900 text-white p-14 rounded-[4.5rem] shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[580px]">
                   <div className="absolute -top-10 -right-10 opacity-5 pointer-events-none rotate-12"><Zap size={400} fill="white" /></div>
                   <div>
                     <h3 className="text-slate-500 text-[11px] font-black uppercase tracking-[0.4em] mb-8">Månadens Kostnad</h3>
                     <div className="flex items-baseline gap-4">
-                      <span className="text-9xl font-black tabular-nums tracking-tighter">{totalCost.toFixed(2)}</span>
+                      <span className="text-7xl font-black tabular-nums tracking-tighter">{totalCost.toFixed(2)}</span>
                       <span className="text-3xl font-bold text-emerald-400">SEK</span>
                     </div>
                   </div>
@@ -549,3 +549,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+
