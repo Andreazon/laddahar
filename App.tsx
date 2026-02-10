@@ -93,7 +93,6 @@ const App: React.FC = () => {
   }, [showSettings, appSettings.cloudId, appSettings.kwhPrice]);
 
   // --- Moln-logik (JSONBlob) ---
-  const getCloudUrl = (id: string) => `https://jsonblob.com/api/jsonBlob/${id}`;
 
   const pushToCloud = async (u: User[], s: ChargingSession[], st: ExtendedSettings, manualId?: string): Promise<{success: boolean, error?: string}> => {
     const id = (manualId || st.cloudId)?.trim();
@@ -527,5 +526,6 @@ const createNewHub = async () => {
 };
 
 export default App;
+
 
 
