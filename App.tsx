@@ -108,7 +108,7 @@ const App: React.FC = () => {
       const payload = { users: u, sessions: s, settings: { kwhPrice: st.kwhPrice }, ts: ts };
 
       const response = await fetch(getCloudUrl(id), {
-        method: 'PATCH',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         body: JSON.stringify(payload)
       });
@@ -528,6 +528,7 @@ const createNewHub = async () => {
 };
 
 export default App;
+
 
 
 
